@@ -163,6 +163,39 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertEqual(len(retry_spans), 1)
         self.assertEqual(retry_spans[0]["status"], "error")
 
+    def test_build_success_trace_from_project_turn_duration(self) -> None:
+        collector, _ = self.make_collector(capture_text=False)
+        events = [
+            {
+                "type": "user",
+                "timestamp": "2026-06-06T20:00:00.000Z",
+                "sessionId": "turn-duration-session",
+                "message": {"role": "user", "content": "hello"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-06-06T20:00:01.000Z",
+                "sessionId": "turn-duration-session",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            },
+            {
+                "type": "system",
+                "subtype": "turn_duration",
+                "timestamp": "2026-06-06T20:00:02.000Z",
+                "sessionId": "turn-duration-session",
+                "duration_ms": 2000,
+            },
+        ]
+
+        trace = collector.build_trace(events, session_id="turn-duration-session", round_started_at="2026-06-06T20:00:00.000Z")
+
+        self.assertEqual(trace["status"], "success")
+        self.assertEqual(trace["end_time"], "2026-06-06T20:00:02.000Z")
+        chat_span = next(span for span in trace["spans"] if span["type"] == "chat")
+        self.assertEqual(chat_span["status"], "success")
+        self.assertEqual(chat_span["end_time"], "2026-06-06T20:00:02.000Z")
+        self.assertNotIn("turn_duration", json.dumps(trace["spans"], ensure_ascii=False))
+
     def test_handle_dry_run_and_upload(self) -> None:
         collector, client = self.make_collector(capture_text=False)
         events = [{"type": "system", "subtype": "init", "session_id": "upload-session"}]
@@ -291,6 +324,16 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                             },
                         }
                     ),
+                    json.dumps(
+                        {
+                            "type": "system",
+                            "subtype": "turn_duration",
+                            "uuid": "duration-1",
+                            "timestamp": "2026-06-06T20:00:03.000Z",
+                            "sessionId": "watch-session",
+                            "duration_ms": 3000,
+                        }
+                    ),
                 ]
             )
             + "\n",
@@ -304,9 +347,12 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         runtime_trace = client.traces[0]
         self.assertEqual(runtime_trace["schemaVersion"], "openmia.runtime.v1")
         self.assertEqual(runtime_trace["session"]["id"], "watch-session")
+        self.assertEqual(runtime_trace["trace"]["status"], "success")
         chat_span = next(span for span in runtime_trace["spans"] if span["type"] == "chat")
         self.assertIsNone(chat_span["parentId"])
         self.assertEqual(chat_span["startTime"], "2026-06-06T20:00:00.000Z")
+        self.assertEqual(chat_span["status"], "success")
+        self.assertEqual(chat_span["endTime"], "2026-06-06T20:00:03.000Z")
         self.assertTrue(chat_span["roundId"].startswith("round_1_"))
         self.assertNotIn("round", {span["type"] for span in runtime_trace["spans"]})
         tool_spans = [span for span in runtime_trace["spans"] if span["type"] == "tool"]

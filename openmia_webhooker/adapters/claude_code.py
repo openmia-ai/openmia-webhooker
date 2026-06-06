@@ -103,9 +103,10 @@ class ClaudeCodeCollector:
         )
         trace_id = f"claude_code_{stable_short(session_id, 24)}"
         status = self._trace_status(events, result_event)
+        terminal_event = self._terminal_event(events, result_event, status)
         started_at = str(session_started_at or init_event.get("timestamp") or source_event.get("timestamp") or now)
         round_started_at = str(round_started_at or init_event.get("timestamp") or source_event.get("timestamp") or now)
-        ended_at = now if result_event or status in {"error", "timeout"} else None
+        ended_at = str(terminal_event.get("timestamp") or now) if terminal_event else None
         prompt_summary = safe_summary(prompt, self.config.capture_text)
         result_text = self._result_text(events, result_event)
         output_summary = safe_summary(result_text, self.config.capture_text)
@@ -315,9 +316,33 @@ class ClaudeCodeCollector:
     def _trace_status(self, events: list[dict[str, Any]], result_event: dict[str, Any]) -> str:
         if result_event:
             return "error" if result_event.get("is_error") else "success"
-        if any(event.get("subtype") == "api_retry" for event in events):
+        if any(event.get("type") == "error" or event.get("subtype") in {"api_retry", "error"} or event.get("is_error") for event in events):
             return "error"
+        if any(event.get("type") == "system" and event.get("subtype") == "turn_duration" for event in events):
+            return "success"
         return "unknown"
+
+    def _terminal_event(self, events: list[dict[str, Any]], result_event: dict[str, Any], status: str) -> dict[str, Any]:
+        if result_event:
+            return result_event
+        turn_duration = next(
+            (event for event in reversed(events) if event.get("type") == "system" and event.get("subtype") == "turn_duration"),
+            {},
+        )
+        if turn_duration:
+            return turn_duration
+        if status in {"error", "timeout"}:
+            return next(
+                (
+                    event
+                    for event in reversed(events)
+                    if event.get("type") == "error"
+                    or event.get("subtype") in {"api_retry", "error"}
+                    or event.get("is_error")
+                ),
+                {},
+            )
+        return {}
 
     def _result_text(self, events: list[dict[str, Any]], result_event: dict[str, Any]) -> str | None:
         if isinstance(result_event.get("result"), str):
@@ -346,7 +371,7 @@ class ClaudeCodeCollector:
             event_type = str(event.get("type") or "event")
             subtype = str(event.get("subtype") or event.get("status") or "")
             if event_type in {"result", "ai-title", "last-prompt", "queue-operation"} or (
-                event_type == "system" and subtype == "init"
+                event_type == "system" and subtype in {"init", "turn_duration", "away_summary"}
             ):
                 continue
             tool_items = _tool_content_items(event)
