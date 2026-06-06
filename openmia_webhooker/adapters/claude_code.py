@@ -345,7 +345,7 @@ class ClaudeCodeCollector:
         for index, event in enumerate(events[:200], start=1):
             event_type = str(event.get("type") or "event")
             subtype = str(event.get("subtype") or event.get("status") or "")
-            if event_type in {"user", "result", "ai-title", "last-prompt", "queue-operation"} or (
+            if event_type in {"result", "ai-title", "last-prompt", "queue-operation"} or (
                 event_type == "system" and subtype == "init"
             ):
                 continue
@@ -354,6 +354,8 @@ class ClaudeCodeCollector:
                 spans.extend(self._tool_item_spans(trace_id, event, tool_items, index, fallback_time, chat_span_id, round_id, round_index))
                 if not _text_content(event):
                     continue
+            if _is_human_user_prompt_event(event):
+                continue
             if event_type in {"assistant", "message"}:
                 continue
             span_status = "error" if subtype in {"api_retry", "error"} or event.get("is_error") else "success"
@@ -612,8 +614,7 @@ def _project_rounds(projects_dir: pathlib.Path) -> list[WatchRound]:
         session_id = _event_session_id(event)
         if not session_id:
             continue
-        event_type = str(event.get("type") or "")
-        if event_type == "user":
+        if _is_human_user_prompt_event(event):
             previous = current.get(session_id)
             if previous:
                 rounds.append(previous)
@@ -655,8 +656,10 @@ def _read_project_events(projects_dir: pathlib.Path) -> list[dict[str, Any]]:
                 continue
             if not isinstance(event, dict):
                 continue
+            event_time = _event_timestamp(event, fallback=file_mtime)
             event["_openmia_source_file"] = str(path)
-            rows.append((_event_timestamp(event, fallback=file_mtime), sequence, event))
+            event["_openmia_event_time"] = event_time
+            rows.append((event_time, sequence, event))
     return [event for _, _, event in sorted(rows, key=lambda item: (item[0], item[1]))]
 
 
@@ -666,6 +669,9 @@ def _event_session_id(event: dict[str, Any]) -> str | None:
 
 
 def _event_timestamp(event: dict[str, Any], fallback: float | None = None) -> float:
+    cached = event.get("_openmia_event_time")
+    if isinstance(cached, (int, float)):
+        return float(cached)
     value = event.get("timestamp")
     if isinstance(value, str):
         try:
@@ -674,7 +680,7 @@ def _event_timestamp(event: dict[str, Any], fallback: float | None = None) -> fl
             return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
         except ValueError:
             pass
-    return fallback if fallback is not None else time.time()
+    return fallback if fallback is not None else 0.0
 
 
 def _user_prompt(event: dict[str, Any]) -> str | None:
@@ -688,6 +694,27 @@ def _user_prompt(event: dict[str, Any]) -> str | None:
             return "\n".join(texts) if texts else None
     content = event.get("content")
     return str(content) if isinstance(content, str) else None
+
+
+def _is_human_user_prompt_event(event: dict[str, Any]) -> bool:
+    if str(event.get("type") or "") != "user":
+        return False
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else event.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        has_text = False
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type.startswith("tool_"):
+                return False
+            if item_type == "text" and isinstance(item.get("text"), str) and item["text"].strip():
+                has_text = True
+        return has_text
+    return False
 
 
 def _has_option(args: list[str], option: str) -> bool:

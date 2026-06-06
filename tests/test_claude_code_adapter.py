@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -311,6 +312,112 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         tool_spans = [span for span in runtime_trace["spans"] if span["type"] == "tool"]
         self.assertGreaterEqual(len(tool_spans), 2)
         self.assertTrue(all(span["parentId"] == chat_span["id"] for span in tool_spans))
+
+    def test_claude_code_watch_keeps_user_tool_results_in_current_round(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        projects_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _cleanup_tree(projects_dir))
+        project = projects_dir / "root-project"
+        project.mkdir(parents=True)
+        (project / "session.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "user-1",
+                            "timestamp": "2026-06-06T20:00:00.000Z",
+                            "sessionId": "tool-result-session",
+                            "message": {"role": "user", "content": "read the file"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "uuid": "assistant-1",
+                            "timestamp": "2026-06-06T20:00:01.000Z",
+                            "sessionId": "tool-result-session",
+                            "message": {
+                                "role": "assistant",
+                                "content": [{"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"file_path": "README.md"}}],
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "tool-result-1",
+                            "timestamp": "2026-06-06T20:00:02.000Z",
+                            "sessionId": "tool-result-session",
+                            "message": {
+                                "role": "user",
+                                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "file contents"}],
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "uuid": "assistant-2",
+                            "timestamp": "2026-06-06T20:00:03.000Z",
+                            "sessionId": "tool-result-session",
+                            "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(watch_project_logs(projects_dir=projects_dir, once=True, dry_run=False, collector=collector), 0)
+
+        self.assertEqual(len(client.traces), 1)
+        runtime_trace = client.traces[0]
+        chat_spans = [span for span in runtime_trace["spans"] if span["type"] == "chat"]
+        self.assertEqual(len(chat_spans), 1)
+        self.assertTrue(chat_spans[0]["roundId"].startswith("round_1_"))
+        self.assertNotIn("round_2", json.dumps(runtime_trace, ensure_ascii=False))
+        tool_spans = [span for span in runtime_trace["spans"] if span["type"] == "tool"]
+        self.assertEqual(len(tool_spans), 2)
+        self.assertEqual({span["metadata"]["item_type"] for span in tool_spans}, {"tool_use", "tool_result"})
+        self.assertTrue(all(span["parentId"] == chat_spans[0]["id"] for span in tool_spans))
+
+    def test_claude_code_watch_follow_uses_file_mtime_for_rows_without_timestamps(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        projects_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _cleanup_tree(projects_dir))
+        project = projects_dir / "root-project"
+        project.mkdir(parents=True)
+        transcript = project / "session.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "user", "uuid": "user-1", "sessionId": "mtime-session", "message": {"role": "user", "content": "hello"}}),
+                    json.dumps({"type": "assistant", "uuid": "assistant-1", "sessionId": "mtime-session", "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        old_mtime = 1_780_000_000
+        os.utime(transcript, (old_mtime, old_mtime))
+
+        self.assertEqual(
+            watch_project_logs(
+                projects_dir=projects_dir,
+                once=False,
+                follow=True,
+                idle_flush_sec=10,
+                poll_interval_sec=0,
+                dry_run=False,
+                collector=collector,
+                max_iterations=1,
+            ),
+            0,
+        )
+
+        self.assertEqual(len(client.traces), 1)
 
     def test_claude_code_watch_follow_flushes_after_idle(self) -> None:
         collector, client = self.make_collector(capture_text=False)
