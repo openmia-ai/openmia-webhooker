@@ -9,7 +9,7 @@ from .adapters import claude_code, codex
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog="openmia-webhooker")
-    parser.add_argument("adapter", choices=("codex", "claude-code"))
+    parser.add_argument("adapter", choices=("codex", "claude-code", "claude-code-run", "claude-code-watch"))
     if not args or args[0] in {"-h", "--help"}:
         parser.parse_args(args)
         return 0
@@ -19,6 +19,10 @@ def main(argv: list[str] | None = None) -> int:
         return codex.main(remaining)
     if adapter == "claude-code":
         return claude_code.main(remaining)
+    if adapter == "claude-code-run":
+        return claude_code.run_main(remaining)
+    if adapter == "claude-code-watch":
+        return claude_code.watch_main(remaining)
     parser.parse_args([adapter])
     return 2
 

@@ -30,9 +30,9 @@ OpenMIA Webhooker 负责：
 
 - 读取 Codex hook stdin payload。
 - 识别 `UserPromptSubmit`、`Stop`、`PreToolUse`、`PostToolUse` 事件。
-- 构造 Runtime JSON v1：session、trace、round span、chat span、tool span、reasoning placeholder span。
+- 构造 Runtime JSON v1：session、trace、顶层 chat span、tool span、reasoning placeholder span。
 - 根据配置决定上传明文或 hash 摘要。
-- 维护本地 state，把同一个本地 session 稳定映射到一个 trace，并把多轮对话追加为新的 round/chat spans。
+- 维护本地 state，把同一个本地 session 稳定映射到一个 trace，并把多轮对话追加为新的顶层 chat spans。
 - 上传到现有 OpenMIA custom_json ingestion endpoint；服务端只负责 raw-first 存储、权限隔离和标准化写入。
 
 Runtime JSON v1 使用 `schemaVersion = "openmia.runtime.v1"`。SDK/webhooker 侧负责理解 Codex hook 和 Claude Code stream-json 语义；OpenMIA app 服务端不再为每个本地工具复制一套来源专属语义 adapter。custom_json endpoint 保持不变，只是 payload schema 升级。
@@ -43,6 +43,8 @@ Runtime JSON v1 使用 `schemaVersion = "openmia.runtime.v1"`。SDK/webhooker �
 - `~/.codex/config.toml`: Codex hook 配置。
 - `~/.codex/openmia-custom-json/collector.log`: OpenMIA Webhooker 上传日志。
 - `~/.codex/openmia-custom-json/state/*.json`: 会话关联 state。
+
+Codex 和 Claude Code 当前遵循同一个展示语义：trace 表示本地 session，每轮用户对话是 `parentId = null` 的顶层 `chat` span，并带稳定 `roundId`。SDK 不发送空 `round` span，也不发送 session summary workflow span。
 
 ## 2. 前置条件
 
@@ -251,7 +253,75 @@ tail -n 20 ~/.codex/openmia-custom-json/collector.log
 
 然后打开 OpenMIA 控制台，按最近时间查找 `Codex custom JSON collector self-test` 或 `Codex session`。
 
-## 8. 让 Codex 生效
+## 8. Claude Code 支持
+
+Claude Code 有三种入口，全部输出 `schemaVersion = "openmia.runtime.v1"`，并复用现有 custom_json endpoint。
+
+### stdin adapter
+
+用于管道、CI 和调试。它从 stdin 读取 Claude Code `stream-json`：
+
+```bash
+claude -p "hello" --verbose --output-format stream-json --include-hook-events \
+  | openmia-webhooker claude-code
+```
+
+dry-run：
+
+```bash
+printf '{"type":"system","subtype":"init","session_id":"claude-test"}\n' \
+  | openmia-webhooker claude-code --dry-run
+```
+
+### non-interactive wrapper
+
+用于不想手动拼 Claude Code `stream-json` 参数的场景。只支持 `--print/-p` 非交互模式：
+
+```bash
+openmia-webhooker claude-code-run -- -p "hello"
+```
+
+OpenMIA Webhooker 会自动追加：
+
+```text
+--verbose --output-format stream-json --include-hook-events
+```
+
+上传完成后，wrapper 会把 Claude Code 最终 result 文本输出到 stdout。`--dry-run` 时只输出 OpenMIA payload，不上传。
+
+```bash
+openmia-webhooker claude-code-run --dry-run -- -p "hello"
+```
+
+### local JSONL watcher
+
+用于已有 Claude Code CLI 调用没有被 wrapper 包住的情况。默认读取：
+
+```text
+~/.claude/projects/**/*.jsonl
+```
+
+一次性扫描：
+
+```bash
+openmia-webhooker claude-code-watch --once
+```
+
+持续跟随，默认等待 round 空闲 10 秒后上传，避免过早上传不完整 assistant/tool 事件：
+
+```bash
+openmia-webhooker claude-code-watch --follow
+```
+
+自定义项目目录：
+
+```bash
+openmia-webhooker claude-code-watch --once --projects-dir /path/to/.claude/projects
+```
+
+watcher 使用 `type=user` 开始新 round，后续 assistant/tool/result/error 事件归入当前 round，直到下一个 user 或 idle flush。已上传 round 会记录在 `~/.codex/openmia-custom-json/state`，重复 `--once` 不会重复上传。
+
+## 9. 让 Codex 生效
 
 更新 `config.toml` 后：
 
@@ -263,7 +333,7 @@ tail -n 20 ~/.codex/openmia-custom-json/collector.log
 
 有些 Codex 环境首次运行 hook 时会要求信任 hook 命令。确认命令路径和 OpenMIA Webhooker 来源无误后，允许该 hook。
 
-## 9. 日志和排障
+## 10. 日志和排障
 
 查看最近日志：
 
@@ -279,6 +349,7 @@ tail -n 50 ~/.codex/openmia-custom-json/collector.log
 - `upload_failed`: 网络不可达、DNS 问题、TLS 问题，或 OpenMIA 服务暂时不可用。
 - `state_write_failed`: state 主目录和 fallback 目录都不可写。OpenMIA Webhooker 会先尝试 `~/.codex/openmia-custom-json/state`，主目录不可写时自动使用 `/tmp/openmia-custom-json/state`。
 - OpenMIA 没看到数据但日志 200: 检查 OpenMIA 的时间筛选、项目空间、ingestion job/raw payload 页面。
+- Claude Code CLI 调用没有自动 trace: 默认不会覆盖系统 `claude` 命令。使用 `openmia-webhooker claude-code-run -- -p ...` 包装非交互调用，或后台运行 `openmia-webhooker claude-code-watch --follow` 读取本地 JSONL。
 
 修复目录权限：
 
@@ -289,7 +360,7 @@ chmod 700 ~/.codex/openmia-custom-json/state
 chmod 600 ~/.codex/openmia-custom-json.env
 ```
 
-## 10. 隐私和安全
+## 11. 隐私和安全
 
 - 不要把 `~/.codex/openmia-custom-json.env` 提交到 Git。
 - 不要把 ingest key 发给别人或贴到 issue、日志、截图里。
@@ -299,7 +370,7 @@ chmod 600 ~/.codex/openmia-custom-json.env
 - OpenMIA Webhooker 会对常见敏感字段做脱敏，但业务数据是否允许上传仍由你的隐私策略决定。
 - Codex hidden reasoning 不会被 hook 暴露，因此 OpenMIA Webhooker 只会上报 reasoning placeholder span，不会上报隐藏推理内容。
 
-## 11. 升级 OpenMIA Webhooker
+## 12. 升级 OpenMIA Webhooker
 
 升级到最新版本：
 
@@ -319,12 +390,13 @@ python3 -m pip install --upgrade openmia-webhooker
 ```bash
 openmia-webhooker --help
 openmia-webhooker codex self_test --dry-run
+openmia-webhooker claude-code-watch --once --dry-run
 openmia-webhooker codex self_test
 ```
 
 然后重启 Codex，并观察日志。
 
-## 12. 迁移到新机器
+## 13. 迁移到新机器
 
 新机器只需要：
 
@@ -341,7 +413,7 @@ python3 -m pip install --user openmia-webhooker
 
 通常不要复制旧机器的 `state/*.json`，除非你明确想保留旧会话关联。
 
-## 13. 快速检查清单
+## 14. 快速检查清单
 
 - `python3 --version` 正常。
 - `python3 -m pip --version` 正常。
@@ -350,5 +422,6 @@ python3 -m pip install --user openmia-webhooker
 - `~/.codex/openmia-custom-json.env` 存在，权限为 `600`。
 - `~/.codex/config.toml` 已配置四个 hook。
 - `openmia-webhooker codex self_test --dry-run` 能输出 JSON。
+- `openmia-webhooker claude-code --dry-run`、`claude-code-run --help`、`claude-code-watch --help` 正常。
 - `openmia-webhooker codex self_test` 能上传成功。
 - 重启 Codex 后，真实对话事件能出现在 OpenMIA。

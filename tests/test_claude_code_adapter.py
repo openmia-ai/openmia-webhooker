@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import pathlib
@@ -11,7 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from openmia_webhooker.adapters.claude_code import ClaudeCodeCollector, parse_jsonl
+from openmia_webhooker.adapters.claude_code import ClaudeCodeCollector, parse_jsonl, run_claude_code, watch_project_logs
 from openmia_webhooker.config import OpenMIAConfig
 
 
@@ -22,6 +23,43 @@ class FakeClient:
     def post_trace(self, trace):
         self.traces.append(trace)
         return 200, '{"success":true}'
+
+
+class FakeClaudeProcess:
+    command: list[str] = []
+
+    def __init__(self, command, stdout=None, stderr=None, text=None) -> None:
+        self.command = list(command)
+        FakeClaudeProcess.command = self.command
+        self.returncode = 0
+
+    def communicate(self) -> tuple[str, str]:
+        return (
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "system",
+                            "subtype": "init",
+                            "session_id": "claude-run-session",
+                            "model": "claude-sonnet-4-6",
+                            "claude_code_version": "2.1.153",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "is_error": False,
+                            "result": "wrapper result",
+                            "session_id": "claude-run-session",
+                            "usage": {"input_tokens": 10, "output_tokens": 2},
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            "claude stderr\n",
+        )
 
 
 class ClaudeCodeAdapterTests(unittest.TestCase):
@@ -78,7 +116,9 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertTrue(trace["input"]["prompt"]["redacted"])
         self.assertNotIn("text", trace["input"]["prompt"])
         self.assertTrue(trace["output"]["completion"]["redacted"])
-        self.assertGreaterEqual(len(trace["spans"]), 2)
+        self.assertEqual(len(trace["spans"]), 1)
+        self.assertEqual(trace["spans"][0]["type"], "chat")
+        self.assertIsNone(trace["spans"][0]["parent_span_id"])
 
     def test_same_session_uploads_increment_rounds_in_one_trace(self) -> None:
         collector, client = self.make_collector(capture_text=False)
@@ -135,6 +175,185 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertEqual(collector.handle(events, dry_run=False), 0)
         self.assertEqual(len(client.traces), 1)
         self.assertEqual(client.traces[0]["schemaVersion"], "openmia.runtime.v1")
+
+    def test_runtime_payload_has_top_level_chat_without_session_or_round_span(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        events = [
+            {"type": "system", "subtype": "init", "session_id": "shape-session"},
+            {"type": "result", "is_error": False, "result": "ok", "session_id": "shape-session"},
+        ]
+
+        collector.handle(events, prompt="hello", dry_run=False)
+
+        runtime_trace = client.traces[0]
+        self.assertEqual(runtime_trace["schemaVersion"], "openmia.runtime.v1")
+        chat_spans = [span for span in runtime_trace["spans"] if span["type"] == "chat"]
+        self.assertEqual(len(chat_spans), 1)
+        self.assertIsNone(chat_spans[0]["parentId"])
+        self.assertTrue(chat_spans[0]["roundId"].startswith("round_1_"))
+        self.assertNotIn("round", {span["type"] for span in runtime_trace["spans"]})
+        self.assertNotIn("Claude Code session", {span["name"] for span in runtime_trace["spans"]})
+
+    def test_claude_code_run_invokes_stream_json_and_outputs_result(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        exit_code = run_claude_code(
+            ["--", "--print=hello"],
+            dry_run=False,
+            stdout=stdout,
+            stderr=stderr,
+            popen_factory=FakeClaudeProcess,
+            collector=collector,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(FakeClaudeProcess.command[:2], ["claude", "--print=hello"])
+        self.assertIn("--verbose", FakeClaudeProcess.command)
+        self.assertIn("--output-format", FakeClaudeProcess.command)
+        self.assertIn("stream-json", FakeClaudeProcess.command)
+        self.assertIn("--include-hook-events", FakeClaudeProcess.command)
+        self.assertIn("claude stderr", stderr.getvalue())
+        self.assertEqual(stdout.getvalue().strip(), "wrapper result")
+        self.assertEqual(len(client.traces), 1)
+        runtime_trace = client.traces[0]
+        self.assertEqual(runtime_trace["schemaVersion"], "openmia.runtime.v1")
+        chat_span = next(span for span in runtime_trace["spans"] if span["type"] == "chat")
+        self.assertIsNone(chat_span["parentId"])
+        self.assertEqual(chat_span["modelName"], "claude-sonnet-4-6")
+        self.assertEqual(chat_span["usage"], {"input_tokens": 10, "output_tokens": 2})
+
+    def test_claude_code_run_rejects_conflicting_output_format(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        stderr = io.StringIO()
+
+        exit_code = run_claude_code(
+            ["-p", "hello", "--output-format", "json"],
+            dry_run=False,
+            stderr=stderr,
+            popen_factory=FakeClaudeProcess,
+            collector=collector,
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("manages --output-format", stderr.getvalue())
+        self.assertEqual(client.traces, [])
+
+    def test_claude_code_watch_once_uploads_project_rounds_idempotently(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        projects_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _cleanup_tree(projects_dir))
+        project = projects_dir / "root-project"
+        project.mkdir(parents=True)
+        (project / "session.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "user-1",
+                            "timestamp": "2026-06-06T20:00:00.000Z",
+                            "sessionId": "watch-session",
+                            "cwd": "/root",
+                            "version": "2.1.153",
+                            "message": {"role": "user", "content": "hello"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "uuid": "assistant-1",
+                            "timestamp": "2026-06-06T20:00:01.000Z",
+                            "sessionId": "watch-session",
+                            "cwd": "/root",
+                            "version": "2.1.153",
+                            "message": {
+                                "role": "assistant",
+                                "model": "claude-sonnet-4-6",
+                                "content": [
+                                    {"type": "text", "text": "hi"},
+                                    {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"file_path": "README.md"}},
+                                ],
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "uuid": "assistant-2",
+                            "timestamp": "2026-06-06T20:00:02.000Z",
+                            "sessionId": "watch-session",
+                            "message": {
+                                "role": "assistant",
+                                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "done"}],
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(watch_project_logs(projects_dir=projects_dir, once=True, dry_run=False, collector=collector), 0)
+        self.assertEqual(watch_project_logs(projects_dir=projects_dir, once=True, dry_run=False, collector=collector), 0)
+
+        self.assertEqual(len(client.traces), 1)
+        runtime_trace = client.traces[0]
+        self.assertEqual(runtime_trace["schemaVersion"], "openmia.runtime.v1")
+        self.assertEqual(runtime_trace["session"]["id"], "watch-session")
+        chat_span = next(span for span in runtime_trace["spans"] if span["type"] == "chat")
+        self.assertIsNone(chat_span["parentId"])
+        self.assertEqual(chat_span["startTime"], "2026-06-06T20:00:00.000Z")
+        self.assertTrue(chat_span["roundId"].startswith("round_1_"))
+        self.assertNotIn("round", {span["type"] for span in runtime_trace["spans"]})
+        tool_spans = [span for span in runtime_trace["spans"] if span["type"] == "tool"]
+        self.assertGreaterEqual(len(tool_spans), 2)
+        self.assertTrue(all(span["parentId"] == chat_span["id"] for span in tool_spans))
+
+    def test_claude_code_watch_follow_flushes_after_idle(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        projects_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _cleanup_tree(projects_dir))
+        project = projects_dir / "root-project"
+        project.mkdir(parents=True)
+        (project / "session.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "user", "uuid": "user-1", "timestamp": "2026-06-06T20:00:00.000Z", "sessionId": "follow-session", "message": {"content": "hello"}}),
+                    json.dumps({"type": "assistant", "uuid": "assistant-1", "timestamp": "2026-06-06T20:00:01.000Z", "sessionId": "follow-session", "message": {"content": [{"type": "text", "text": "hi"}]}}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            watch_project_logs(
+                projects_dir=projects_dir,
+                once=False,
+                follow=True,
+                idle_flush_sec=0,
+                poll_interval_sec=0,
+                dry_run=False,
+                collector=collector,
+                max_iterations=1,
+            ),
+            0,
+        )
+
+        self.assertEqual(len(client.traces), 1)
+
+
+def _cleanup_tree(path: pathlib.Path) -> None:
+    with contextlib.suppress(OSError):
+        for child in sorted(path.rglob("*"), reverse=True):
+            if child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        path.rmdir()
 
 
 if __name__ == "__main__":
