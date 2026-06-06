@@ -1,6 +1,6 @@
-# OpenMIA Webhooker Codex Deployment Tutorial
+# OpenMIA Webhooker Deployment Guide
 
-这份教程用于部署 PyPI 版 OpenMIA Webhooker，让 Codex 的 hook 事件被转换成 OpenMIA Runtime JSON v1，并通过现有 custom_json webhook 上传到 OpenMIA。
+这份指南用于部署 PyPI 版 OpenMIA Webhooker，让 Codex hook 事件和 Claude Code 本地事件被转换成 OpenMIA Runtime JSON v1，并通过现有 custom_json webhook 上传到 OpenMIA。
 
 本文假设 OpenMIA Webhooker 已经发布到 PyPI。Linux/macOS 示例使用 `python3` 和 POSIX shell，Windows 示例使用 PowerShell。
 
@@ -407,6 +407,28 @@ openmia-webhooker claude-code-watch --once
 openmia-webhooker claude-code-watch --follow
 ```
 
+`--follow` 默认会把 watcher 状态写到 stderr，不会污染 stdout 的 dry-run JSON。状态内容包括 projects dir、dry-run、idle flush、poll interval、ready/pending rounds、上传/打印/跳过/失败数量、下一次扫描倒计时和 pending flush 倒计时。
+
+状态显示默认使用 `auto`：
+
+- TTY 终端里使用单行原地刷新，类似 `nvidia-smi`/`watch` 的轻量效果。
+- 输出被重定向到日志、CI 或非 TTY 时，自动退回逐行日志。
+
+可显式指定状态样式：
+
+```bash
+openmia-webhooker claude-code-watch --follow --status-style auto
+openmia-webhooker claude-code-watch --follow --status-style inline
+openmia-webhooker claude-code-watch --follow --status-style line
+openmia-webhooker claude-code-watch --follow --status-style off
+```
+
+脚本环境也可以直接关闭状态显示：
+
+```bash
+openmia-webhooker claude-code-watch --follow --no-status
+```
+
 自定义项目目录：
 
 ```bash
@@ -446,6 +468,16 @@ Windows PowerShell：
 $env:OPENMIA_CLAUDE_COMMAND = "C:\Path\To\claude.cmd"
 $env:OPENMIA_CLAUDE_PROJECTS_DIR = "$HOME\.claude\projects"
 ```
+
+### hidden banner
+
+OpenMIA Webhooker 还包含一个隐藏的本地 banner：
+
+```bash
+openmia-webhooker openmia
+```
+
+该命令只在本地 stdout 打印 ASCII art，不上传、不写 state、不写日志，也不会出现在顶层 `--help` 中。
 
 ## 9. 让 Codex 生效
 

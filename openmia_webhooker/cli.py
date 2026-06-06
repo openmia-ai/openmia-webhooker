@@ -5,13 +5,21 @@ import sys
 
 from . import doctor
 from .adapters import claude_code, codex
+from .banner import OPENMIA_BANNER
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["openmia"]:
+        print(f"\n{OPENMIA_BANNER}\n")
+        return 0
+
     parser = argparse.ArgumentParser(prog="openmia-webhooker")
     parser.add_argument("adapter", choices=("codex", "claude-code", "claude-code-run", "claude-code-watch", "doctor"))
-    if not args or args[0] in {"-h", "--help"}:
+    if args and args[0] in {"-h", "--help"}:
+        parser.print_help()
+        return 0
+    if not args:
         parser.parse_args(args)
         return 0
 

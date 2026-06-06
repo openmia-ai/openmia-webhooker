@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pathlib
 import os
 import shutil
@@ -29,6 +30,44 @@ class WatchRound:
     started_at: str | None
     updated_at: float
     events: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class WatchEmitStats:
+    uploaded: int = 0
+    printed: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+
+@dataclass
+class WatchStatusRenderer:
+    stderr: TextIO
+    style: str
+    last_inline_length: int = 0
+
+    def write_line(self, message: str) -> None:
+        if self.style == "off":
+            return
+        print(f"[openmia-webhooker] {message}", file=self.stderr, flush=True)
+
+    def write_scan(self, message: str) -> None:
+        if self.style == "off":
+            return
+        status_line = f"[openmia-webhooker] {message}"
+        if self.style != "inline":
+            print(status_line, file=self.stderr, flush=True)
+            return
+        padding = " " * max(0, self.last_inline_length - len(status_line))
+        self.stderr.write(f"\r{status_line}{padding}")
+        self.stderr.flush()
+        self.last_inline_length = len(status_line)
+
+    def finish(self) -> None:
+        if self.style == "inline" and self.last_inline_length:
+            self.stderr.write("\n")
+            self.stderr.flush()
+            self.last_inline_length = 0
 
 
 def parse_jsonl(lines: Iterable[str]) -> list[dict[str, Any]]:
@@ -572,22 +611,57 @@ def watch_project_logs(
     idle_flush_sec: float = 10.0,
     poll_interval_sec: float = 2.0,
     stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    show_status: bool | None = None,
+    status_style: str = "auto",
     collector: ClaudeCodeCollector | None = None,
     max_iterations: int | None = None,
+    time_func: Any = time.time,
+    sleep_func: Any = time.sleep,
 ) -> int:
     active_collector = collector or ClaudeCodeCollector.from_env()
     resolved_projects_dir = resolve_claude_projects_dir(projects_dir)
+    err = stderr if stderr is not None else sys.stderr
+    renderer = WatchStatusRenderer(err, _resolve_watch_status_style(err, follow=follow, show_status=show_status, status_style=status_style))
+    if renderer.style != "off":
+        _write_watch_start_status(
+            renderer,
+            mode="follow" if follow else "once",
+            projects_dir=resolved_projects_dir,
+            dry_run=dry_run,
+            idle_flush_sec=idle_flush_sec,
+            poll_interval_sec=poll_interval_sec,
+            state_dir=active_collector.config.state_dir,
+            log_path=active_collector.config.log_path,
+        )
     iterations = 0
-    while True:
-        rounds = _project_rounds(resolved_projects_dir)
-        if follow:
-            cutoff = time.time() - idle_flush_sec
-            rounds = [round_item for round_item in rounds if round_item.updated_at <= cutoff]
-        _emit_watch_rounds(active_collector, rounds, dry_run=dry_run, stdout=stdout)
-        iterations += 1
-        if once or (max_iterations is not None and iterations >= max_iterations):
-            return 0
-        time.sleep(poll_interval_sec)
+    try:
+        while True:
+            now = float(time_func())
+            all_rounds = _project_rounds(resolved_projects_dir)
+            rounds = all_rounds
+            pending_flush_sec: float | None = None
+            if follow:
+                cutoff = now - idle_flush_sec
+                rounds = [round_item for round_item in all_rounds if round_item.updated_at <= cutoff]
+                pending_flush_sec = _next_pending_flush_sec(active_collector, all_rounds, cutoff, idle_flush_sec, now)
+            stats = _emit_watch_rounds(active_collector, rounds, dry_run=dry_run, stdout=stdout)
+            iterations += 1
+            if renderer.style != "off":
+                _write_watch_scan_status(
+                    renderer,
+                    iteration=iterations,
+                    ready_count=len(rounds),
+                    pending_count=_pending_round_count(active_collector, all_rounds, rounds),
+                    stats=stats,
+                    next_scan_sec=None if once else poll_interval_sec,
+                    pending_flush_sec=pending_flush_sec,
+                )
+            if once or (max_iterations is not None and iterations >= max_iterations):
+                return 0
+            sleep_func(poll_interval_sec)
+    finally:
+        renderer.finish()
 
 
 def _emit_watch_rounds(
@@ -596,7 +670,8 @@ def _emit_watch_rounds(
     *,
     dry_run: bool,
     stdout: TextIO | None,
-) -> None:
+) -> WatchEmitStats:
+    stats = WatchEmitStats()
     for round_item in rounds:
         state_key = f"claude_code_watch:{round_item.session_id}"
         state = collector.state_store.load(state_key) or {}
@@ -604,6 +679,7 @@ def _emit_watch_rounds(
         if not isinstance(uploaded, list):
             uploaded = []
         if round_item.round_id in uploaded:
+            stats.skipped += 1
             continue
         legacy_trace = collector.build_trace(
             round_item.events,
@@ -616,7 +692,13 @@ def _emit_watch_rounds(
             round_started_at=round_item.started_at,
         )
         success = collector.emit_legacy_trace(legacy_trace, dry_run=dry_run, stdout=stdout, event_name="project_jsonl")
-        if success and not dry_run:
+        if not success:
+            stats.failed += 1
+            continue
+        if dry_run:
+            stats.printed += 1
+        else:
+            stats.uploaded += 1
             uploaded.append(round_item.round_id)
             try:
                 collector.state_store.save(
@@ -633,6 +715,113 @@ def _emit_watch_rounds(
                 )
             except OSError as exc:
                 collector.log_event({"level": "error", "message": "state_write_failed", "thread_id": state_key, "error": repr(exc)})
+    return stats
+
+
+def _write_watch_start_status(
+    renderer: WatchStatusRenderer,
+    *,
+    mode: str,
+    projects_dir: pathlib.Path,
+    dry_run: bool,
+    idle_flush_sec: float,
+    poll_interval_sec: float,
+    state_dir: pathlib.Path,
+    log_path: pathlib.Path,
+) -> None:
+    renderer.write_line("Claude Code watcher started")
+    renderer.write_line(
+        (
+            f"mode={mode} projects_dir={projects_dir} dry_run={str(dry_run).lower()} "
+            f"idle_flush_sec={_duration_value(idle_flush_sec)} poll_interval_sec={_duration_value(poll_interval_sec)}"
+        ),
+    )
+    renderer.write_line(f"state_dir={state_dir} log_path={log_path}")
+
+
+def _write_watch_scan_status(
+    renderer: WatchStatusRenderer,
+    *,
+    iteration: int,
+    ready_count: int,
+    pending_count: int,
+    stats: WatchEmitStats,
+    next_scan_sec: float | None,
+    pending_flush_sec: float | None,
+) -> None:
+    renderer.write_scan(
+        (
+            f"scan={iteration} ready_rounds={ready_count} pending_rounds={pending_count} "
+            f"uploaded_rounds={stats.uploaded} printed_rounds={stats.printed} "
+            f"skipped_rounds={stats.skipped} failed_rounds={stats.failed} "
+            f"next_scan={_seconds_label(next_scan_sec)} pending_flush={_seconds_label(pending_flush_sec)}"
+        ),
+    )
+
+
+def _pending_round_count(collector: ClaudeCodeCollector, all_rounds: list[WatchRound], ready_rounds: list[WatchRound]) -> int:
+    ready_keys = {_watch_round_key(round_item) for round_item in ready_rounds}
+    return sum(
+        1
+        for round_item in all_rounds
+        if _watch_round_key(round_item) not in ready_keys and not _is_watch_round_uploaded(collector, round_item)
+    )
+
+
+def _next_pending_flush_sec(
+    collector: ClaudeCodeCollector,
+    all_rounds: list[WatchRound],
+    cutoff: float,
+    idle_flush_sec: float,
+    now: float,
+) -> float | None:
+    remaining: list[float] = []
+    for round_item in all_rounds:
+        if round_item.updated_at <= cutoff or _is_watch_round_uploaded(collector, round_item):
+            continue
+        remaining.append(max(0.0, idle_flush_sec - (now - round_item.updated_at)))
+    return min(remaining) if remaining else None
+
+
+def _watch_round_key(round_item: WatchRound) -> tuple[str, str]:
+    return (round_item.session_id, round_item.round_id)
+
+
+def _is_watch_round_uploaded(collector: ClaudeCodeCollector, round_item: WatchRound) -> bool:
+    state = collector.state_store.load(f"claude_code_watch:{round_item.session_id}") or {}
+    uploaded = state.get("uploaded_rounds")
+    return isinstance(uploaded, list) and round_item.round_id in uploaded
+
+
+def _seconds_label(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    return f"{max(0, int(math.ceil(seconds)))}s"
+
+
+def _duration_value(seconds: float) -> str:
+    value = float(seconds)
+    return str(int(value)) if value.is_integer() else str(value)
+
+
+def _resolve_watch_status_style(
+    stderr: TextIO,
+    *,
+    follow: bool,
+    show_status: bool | None,
+    status_style: str,
+) -> str:
+    if show_status is not None:
+        return "line" if show_status else "off"
+    normalized = status_style.lower()
+    if normalized not in {"auto", "line", "inline", "off"}:
+        raise ValueError(f"invalid watch status style: {status_style}")
+    if not follow:
+        return "off"
+    if normalized == "auto":
+        is_tty = getattr(stderr, "isatty", lambda: False)
+        return "inline" if bool(is_tty()) else "line"
+    return normalized
 
 
 def _project_rounds(projects_dir: pathlib.Path) -> list[WatchRound]:
@@ -830,6 +1019,8 @@ def watch_main(argv: list[str] | None = None) -> int:
     mode.add_argument("--once", action="store_true")
     mode.add_argument("--follow", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-status", action="store_true")
+    parser.add_argument("--status-style", choices=("auto", "line", "inline", "off"), default="auto")
     parser.add_argument("--projects-dir", type=pathlib.Path, default=None)
     parser.add_argument("--idle-flush-sec", type=float, default=10.0)
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
@@ -842,6 +1033,7 @@ def watch_main(argv: list[str] | None = None) -> int:
         follow=args.follow,
         idle_flush_sec=args.idle_flush_sec,
         poll_interval_sec=args.poll_interval_sec,
+        status_style="off" if args.no_status else args.status_style,
     )
 
 

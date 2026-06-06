@@ -59,16 +59,30 @@ openmia-webhooker codex user_prompt_submit
 openmia-webhooker claude-code --dry-run
 openmia-webhooker claude-code-run --dry-run -- -p "hello"
 openmia-webhooker claude-code-watch --once --dry-run
+openmia-webhooker claude-code-watch --follow
 ```
 
 Claude Code support has three modes:
 
 - `claude-code`: reads Claude Code `stream-json` from stdin for pipes, CI and debugging.
 - `claude-code-run`: wraps non-interactive `claude -p/--print`, forces `--verbose --output-format stream-json --include-hook-events`, uploads the trace, then prints Claude's final result. Use `--claude-command` or `OPENMIA_CLAUDE_COMMAND` if the executable is not named `claude`.
-- `claude-code-watch`: reads Claude Code project JSONL files and uploads completed local rounds without wrapping the `claude` command. The default is `~/.claude/projects/**/*.jsonl`; use `--projects-dir` or `OPENMIA_CLAUDE_PROJECTS_DIR` to override it.
+- `claude-code-watch`: reads Claude Code project JSONL files and uploads completed local rounds without wrapping the `claude` command. The default is `~/.claude/projects/**/*.jsonl`; use `--projects-dir` or `OPENMIA_CLAUDE_PROJECTS_DIR` to override it. In `--follow` mode, status is written to stderr; TTYs use an inline one-line refresh by default, while logs/CI fall back to line output.
+
+Status display controls:
+
+```bash
+openmia-webhooker claude-code-watch --follow --status-style auto
+openmia-webhooker claude-code-watch --follow --status-style inline
+openmia-webhooker claude-code-watch --follow --status-style line
+openmia-webhooker claude-code-watch --follow --status-style off
+openmia-webhooker claude-code-watch --follow --no-status
+```
+
+## Deployment Guide
 
 See [docs/OPENMIA_CUSTOM_JSON_DEPLOYMENT.md](docs/OPENMIA_CUSTOM_JSON_DEPLOYMENT.md)
-for Codex deployment notes.
+for Linux/macOS and Windows deployment steps, Codex hook configuration, Claude
+Code wrapper/watcher setup, privacy settings and troubleshooting.
 
 ## Configuration Paths
 

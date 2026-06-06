@@ -71,6 +71,11 @@ class FakeClaudeProcess:
         )
 
 
+class FakeTTYStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 class ClaudeCodeAdapterTests(unittest.TestCase):
     def make_collector(self, capture_text: bool = False) -> tuple[ClaudeCodeCollector, FakeClient]:
         tmpdir = tempfile.TemporaryDirectory()
@@ -503,6 +508,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                 idle_flush_sec=10,
                 poll_interval_sec=0,
                 dry_run=False,
+                show_status=False,
                 collector=collector,
                 max_iterations=1,
             ),
@@ -536,6 +542,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                 idle_flush_sec=0,
                 poll_interval_sec=0,
                 dry_run=False,
+                show_status=False,
                 collector=collector,
                 max_iterations=1,
             ),
@@ -543,6 +550,154 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(len(client.traces), 1)
+
+    def test_claude_code_watch_follow_status_uses_stderr_and_preserves_stdout_json(self) -> None:
+        collector, _ = self.make_collector(capture_text=False)
+        projects_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _cleanup_tree(projects_dir))
+        project = projects_dir / "root-project"
+        project.mkdir(parents=True)
+
+        ready_transcript = project / "ready.jsonl"
+        ready_transcript.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "user", "uuid": "ready-user", "sessionId": "ready-session", "message": {"role": "user", "content": "hello"}}),
+                    json.dumps({"type": "assistant", "uuid": "ready-assistant", "sessionId": "ready-session", "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.utime(ready_transcript, (90, 90))
+
+        pending_transcript = project / "pending.jsonl"
+        pending_transcript.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "user", "uuid": "pending-user", "sessionId": "pending-session", "message": {"role": "user", "content": "wait"}}),
+                    json.dumps({"type": "assistant", "uuid": "pending-assistant", "sessionId": "pending-session", "message": {"role": "assistant", "content": [{"type": "text", "text": "working"}]}}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.utime(pending_transcript, (105, 105))
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        self.assertEqual(
+            watch_project_logs(
+                projects_dir=projects_dir,
+                once=False,
+                follow=True,
+                idle_flush_sec=10,
+                poll_interval_sec=0,
+                dry_run=True,
+                stdout=stdout,
+                stderr=stderr,
+                show_status=True,
+                collector=collector,
+                max_iterations=1,
+                time_func=lambda: 110,
+                sleep_func=lambda _seconds: None,
+            ),
+            0,
+        )
+
+        runtime_trace = json.loads(stdout.getvalue())
+        self.assertEqual(runtime_trace["schemaVersion"], "openmia.runtime.v1")
+        self.assertEqual(runtime_trace["session"]["id"], "ready-session")
+
+        status = stderr.getvalue()
+        self.assertIn("Claude Code watcher started", status)
+        self.assertIn("mode=follow", status)
+        self.assertIn(f"projects_dir={projects_dir}", status)
+        self.assertIn("dry_run=true", status)
+        self.assertIn("idle_flush_sec=10", status)
+        self.assertIn("poll_interval_sec=0", status)
+        self.assertIn(f"state_dir={collector.config.state_dir}", status)
+        self.assertIn(f"log_path={collector.config.log_path}", status)
+        self.assertIn("ready_rounds=1", status)
+        self.assertIn("pending_rounds=1", status)
+        self.assertIn("uploaded_rounds=0", status)
+        self.assertIn("printed_rounds=1", status)
+        self.assertIn("skipped_rounds=0", status)
+        self.assertIn("next_scan=0s", status)
+        self.assertIn("pending_flush=5s", status)
+
+    def test_claude_code_watch_follow_status_can_be_disabled(self) -> None:
+        collector, _ = self.make_collector(capture_text=False)
+        projects_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _cleanup_tree(projects_dir))
+        project = projects_dir / "root-project"
+        project.mkdir(parents=True)
+        transcript = project / "ready.jsonl"
+        transcript.write_text(
+            json.dumps({"type": "user", "uuid": "user-1", "sessionId": "quiet-session", "message": {"role": "user", "content": "hello"}})
+            + "\n",
+            encoding="utf-8",
+        )
+        os.utime(transcript, (90, 90))
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        self.assertEqual(
+            watch_project_logs(
+                projects_dir=projects_dir,
+                once=False,
+                follow=True,
+                idle_flush_sec=10,
+                poll_interval_sec=0,
+                dry_run=True,
+                stdout=stdout,
+                stderr=stderr,
+                show_status=False,
+                collector=collector,
+                max_iterations=1,
+                time_func=lambda: 110,
+                sleep_func=lambda _seconds: None,
+            ),
+            0,
+        )
+
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(json.loads(stdout.getvalue())["session"]["id"], "quiet-session")
+
+    def test_claude_code_watch_auto_status_uses_inline_for_tty(self) -> None:
+        collector, _ = self.make_collector(capture_text=False)
+        projects_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: _cleanup_tree(projects_dir))
+
+        stderr = FakeTTYStringIO()
+
+        self.assertEqual(
+            watch_project_logs(
+                projects_dir=projects_dir,
+                once=False,
+                follow=True,
+                idle_flush_sec=10,
+                poll_interval_sec=1,
+                dry_run=True,
+                stderr=stderr,
+                status_style="auto",
+                collector=collector,
+                max_iterations=1,
+                time_func=lambda: 110,
+                sleep_func=lambda _seconds: None,
+            ),
+            0,
+        )
+
+        status = stderr.getvalue()
+        self.assertIn("Claude Code watcher started", status)
+        self.assertIn("\r[openmia-webhooker] scan=1", status)
+        self.assertIn("ready_rounds=0", status)
+        self.assertIn("pending_rounds=0", status)
+        self.assertIn("next_scan=1s", status)
+        self.assertTrue(status.endswith("\n"))
 
 
 def _cleanup_tree(path: pathlib.Path) -> None:
