@@ -160,7 +160,7 @@ class OpenMIAWebhookerTests(unittest.TestCase):
             self.assertEqual(trace["trace"]["id"], trace_id)
             self.assertGreaterEqual(len(trace["spans"]), 2)
             self.assertEqual(trace["spans"][1]["type"], "round")
-            self.assertEqual(trace["spans"][1]["parentId"], f"{trace_id}_root")
+            self.assertIsNone(trace["spans"][1]["parentId"])
             self.assertEqual(trace["spans"][2]["type"], "chat")
             self.assertEqual(trace["spans"][2]["parentId"], trace["spans"][1]["id"])
             self.assertEqual(trace["spans"][2]["roundId"], trace["spans"][2]["metadata"]["turn_id"])
@@ -190,6 +190,8 @@ class OpenMIAWebhookerTests(unittest.TestCase):
 
             self.assertTrue(first_round["roundId"].startswith("turn_1_"))
             self.assertTrue(second_round["roundId"].startswith("turn_2_"))
+            self.assertIsNone(first_round["parentId"])
+            self.assertIsNone(second_round["parentId"])
             self.assertEqual(first_chat["parentId"], first_round["id"])
             self.assertEqual(second_chat["parentId"], second_round["id"])
             self.assertEqual(first_chat["roundId"], first_round["roundId"])

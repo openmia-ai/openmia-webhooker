@@ -104,6 +104,8 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
 
         self.assertTrue(first_round["roundId"].startswith("round_1_"))
         self.assertTrue(second_round["roundId"].startswith("round_2_"))
+        self.assertIsNone(first_round["parentId"])
+        self.assertIsNone(second_round["parentId"])
         self.assertEqual(first_chat["parentId"], first_round["id"])
         self.assertEqual(second_chat["parentId"], second_round["id"])
         self.assertEqual(first_chat["roundId"], first_round["roundId"])

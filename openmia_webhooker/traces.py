@@ -27,7 +27,7 @@ def make_round_span(
 ) -> dict[str, Any]:
     return {
         "span_id": f"{trace_id}_round_{round_id}",
-        "parent_span_id": parent_span_id or f"{trace_id}_root",
+        "parent_span_id": parent_span_id,
         "round_id": round_id,
         "name": f"Round {round_index}" if round_index else "Round unknown",
         "type": "round",
