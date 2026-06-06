@@ -19,6 +19,7 @@ from ..redaction import (
     safe_summary,
     summarize_value,
 )
+from ..runtime import to_runtime_payload
 from ..state import FileStateStore, newest_session_output_summary
 from ..traces import build_reasoning_spans, build_self_test_trace, make_chat_span, make_root_span
 from ..utils import find_first_key, normalize_event_name, safe_id_part, stable_short, utc_now, sha256_text
@@ -468,14 +469,22 @@ class CodexCollector:
         event = normalize_event_name(event_name)
         if event == "self_test":
             trace = build_self_test_trace()
-            return str(trace["session_id"]), str(trace["trace_id"]), trace
+            return (
+                str(trace["session_id"]),
+                str(trace["trace_id"]),
+                to_runtime_payload(trace, source_type="codex", adapter_name="codex_hooks", event_name=event_name),
+            )
         if event in {"user_prompt_submit", "userpromptsubmit", "prompt_submit"}:
-            return self.build_user_prompt_trace(payload, raw_text)
+            thread_id, trace_id, trace = self.build_user_prompt_trace(payload, raw_text)
+            return thread_id, trace_id, to_runtime_payload(trace, source_type="codex", adapter_name="codex_hooks", event_name=event_name)
         if event == "stop":
-            return self.build_stop_trace(payload, raw_text)
+            thread_id, trace_id, trace = self.build_stop_trace(payload, raw_text)
+            return thread_id, trace_id, to_runtime_payload(trace, source_type="codex", adapter_name="codex_hooks", event_name=event_name)
         if is_tool_event(event_name, payload):
-            return self.build_tool_trace(payload, raw_text, event_name)
-        return self.build_tool_trace(payload, raw_text, event_name)
+            thread_id, trace_id, trace = self.build_tool_trace(payload, raw_text, event_name)
+            return thread_id, trace_id, to_runtime_payload(trace, source_type="codex", adapter_name="codex_hooks", event_name=event_name)
+        thread_id, trace_id, trace = self.build_tool_trace(payload, raw_text, event_name)
+        return thread_id, trace_id, to_runtime_payload(trace, source_type="codex", adapter_name="codex_hooks", event_name=event_name)
 
     def handle(
         self,

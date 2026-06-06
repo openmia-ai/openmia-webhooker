@@ -1,6 +1,6 @@
 # OpenMIA Webhooker Codex Deployment Tutorial
 
-这份教程用于部署 PyPI 版 OpenMIA Webhooker，让 Codex 的 hook 事件被转换成 OpenMIA custom_json trace 并上传到 OpenMIA。
+这份教程用于部署 PyPI 版 OpenMIA Webhooker，让 Codex 的 hook 事件被转换成 OpenMIA Runtime JSON v1，并通过现有 custom_json webhook 上传到 OpenMIA。
 
 本文假设 OpenMIA Webhooker 已经发布到 PyPI：
 
@@ -22,6 +22,7 @@ openmia-webhooker
 Codex hooks
   -> openmia-webhooker codex
   -> openmia_webhooker.adapters.codex
+  -> OpenMIA Runtime JSON v1
   -> OpenMIA custom_json endpoint
 ```
 
@@ -29,10 +30,12 @@ OpenMIA Webhooker 负责：
 
 - 读取 Codex hook stdin payload。
 - 识别 `UserPromptSubmit`、`Stop`、`PreToolUse`、`PostToolUse` 事件。
-- 构造 session、trace、chat span、tool span、reasoning placeholder span。
+- 构造 Runtime JSON v1：session、trace、chat turn、tool span、reasoning placeholder span。
 - 根据配置决定上传明文或 hash 摘要。
 - 维护本地 state，把同一轮 prompt、工具调用和 stop 事件关联起来。
-- 上传到 OpenMIA custom_json ingestion endpoint。
+- 上传到 OpenMIA custom_json ingestion endpoint；服务端只负责 raw-first 存储、权限隔离和标准化写入。
+
+Runtime JSON v1 使用 `schemaVersion = "openmia.runtime.v1"`。SDK/webhooker 侧负责理解 Codex hook 语义；OpenMIA app 服务端不再为每个本地工具复制一套来源专属语义 adapter。
 
 本地仍需要维护这些文件：
 

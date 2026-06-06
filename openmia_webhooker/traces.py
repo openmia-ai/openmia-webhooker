@@ -28,6 +28,7 @@ def make_chat_span(
 ) -> dict[str, Any]:
     return {
         "span_id": chat_span_id,
+        "parent_span_id": f"{trace_id}_root",
         "name": f"Chat turn {turn_index}" if turn_index else "Chat turn unknown",
         "type": "chat",
         "status": status,

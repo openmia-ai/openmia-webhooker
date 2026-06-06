@@ -9,6 +9,7 @@ from typing import Any, Iterable, TextIO
 from ..client import OpenMIAClient
 from ..config import OpenMIAConfig
 from ..redaction import redacted_copy, safe_summary, summarize_value
+from ..runtime import to_runtime_payload
 from ..traces import make_root_span
 from ..utils import normalize_event_name, stable_short, utc_now
 
@@ -134,8 +135,14 @@ class ClaudeCodeCollector:
         stdout: TextIO | None = None,
     ) -> int:
         out = stdout if stdout is not None else sys.stdout
-        trace = self.build_trace(events, name=name, prompt=prompt)
-        trace_id = str(trace["trace_id"])
+        legacy_trace = self.build_trace(events, name=name, prompt=prompt)
+        trace_id = str(legacy_trace["trace_id"])
+        trace = to_runtime_payload(
+            legacy_trace,
+            source_type="claude_code",
+            adapter_name="claude_code_stream_json",
+            event_name="stream_json",
+        )
 
         if dry_run:
             print(json.dumps(redacted_copy(trace), ensure_ascii=False, indent=2, default=str), file=out)

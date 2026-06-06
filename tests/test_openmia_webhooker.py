@@ -136,10 +136,31 @@ class OpenMIAWebhookerTests(unittest.TestCase):
             out = io.StringIO()
             self.assertEqual(collector.handle("self_test", {}, "", dry_run=True, stdout=out), 0)
             dry_trace = json.loads(out.getvalue())
-            self.assertEqual(dry_trace["input"], "[REDACTED]")
+            self.assertEqual(dry_trace["schemaVersion"], "openmia.runtime.v1")
+            self.assertEqual(dry_trace["source"]["type"], "codex")
+            self.assertEqual(dry_trace["trace"]["input"], "[REDACTED]")
 
             self.assertEqual(collector.handle("self_test", {}, "", dry_run=False), 0)
             self.assertEqual(len(client.traces), 1)
+            self.assertEqual(client.traces[0]["schemaVersion"], "openmia.runtime.v1")
+
+    def test_build_trace_outputs_runtime_json_v1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            collector, _ = self.make_collector(tmpdir, capture_text=False)
+            _, trace_id, trace = collector.build_trace(
+                "UserPromptSubmit",
+                {"conversation_id": "runtime-thread", "prompt": "hello"},
+                "",
+            )
+
+            self.assertTrue(trace_id.startswith("codex_custom_"))
+            self.assertEqual(trace["schemaVersion"], "openmia.runtime.v1")
+            self.assertEqual(trace["source"]["type"], "codex")
+            self.assertEqual(trace["session"]["id"], "runtime-thread")
+            self.assertEqual(trace["trace"]["id"], trace_id)
+            self.assertGreaterEqual(len(trace["spans"]), 2)
+            self.assertEqual(trace["spans"][1]["parentId"], f"{trace_id}_root")
+            self.assertEqual(trace["spans"][1]["roundId"], trace["spans"][1]["metadata"]["turn_id"])
 
     def test_state_store_falls_back_when_primary_is_unwritable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -101,10 +101,12 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         out = io.StringIO()
         self.assertEqual(collector.handle(events, dry_run=True, stdout=out), 0)
         dry_trace = json.loads(out.getvalue())
-        self.assertEqual(dry_trace["metadata"]["source"], "claude_code_stream_json")
+        self.assertEqual(dry_trace["schemaVersion"], "openmia.runtime.v1")
+        self.assertEqual(dry_trace["source"]["type"], "claude_code")
 
         self.assertEqual(collector.handle(events, dry_run=False), 0)
         self.assertEqual(len(client.traces), 1)
+        self.assertEqual(client.traces[0]["schemaVersion"], "openmia.runtime.v1")
 
 
 if __name__ == "__main__":
