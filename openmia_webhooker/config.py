@@ -13,7 +13,7 @@ ENV_FILE_NAME = "openmia-custom-json.env"
 class OpenMIAConfig:
     endpoint: str = DEFAULT_ENDPOINT
     ingest_key: str = ""
-    capture_text: bool = False
+    capture_text: bool = True
     base_dir: pathlib.Path = DEFAULT_CODEX_HOME
     env_file_path: pathlib.Path | None = None
     state_dir_path: pathlib.Path | None = None
@@ -44,7 +44,7 @@ class OpenMIAConfig:
         return cls(
             endpoint=values.get("OPENMIA_CUSTOM_JSON_ENDPOINT", DEFAULT_ENDPOINT),
             ingest_key=values.get("OPENMIA_CUSTOM_JSON_INGEST_KEY", ""),
-            capture_text=_truthy(values.get("OPENMIA_CAPTURE_TEXT", "false")),
+            capture_text=_truthy(values.get("OPENMIA_CAPTURE_TEXT", "true")),
             base_dir=resolved_base_dir,
             env_file_path=env_file_path,
             state_dir_path=_optional_path(values.get("OPENMIA_STATE_DIR")),

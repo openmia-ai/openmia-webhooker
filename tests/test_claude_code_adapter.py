@@ -261,7 +261,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertIn("--verbose", FakeClaudeProcess.command)
         self.assertIn("--output-format", FakeClaudeProcess.command)
         self.assertIn("stream-json", FakeClaudeProcess.command)
-        self.assertIn("--include-hook-events", FakeClaudeProcess.command)
+        self.assertNotIn("--include-hook-events", FakeClaudeProcess.command)
         self.assertIn("claude stderr", stderr.getvalue())
         self.assertEqual(stdout.getvalue().strip(), "wrapper result")
         self.assertEqual(len(client.traces), 1)
@@ -322,8 +322,10 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                 self.assertEqual(resolve_claude_projects_dir(cli_dir), cli_dir)
                 self.assertEqual(resolve_claude_projects_dir(), env_dir)
 
-            with mock.patch.dict(os.environ, {}, clear=True):
-                self.assertEqual(resolve_claude_projects_dir(), pathlib.Path.home() / ".claude" / "projects")
+            home_dir = pathlib.Path(tmpdir) / "home"
+            home_dir.mkdir()
+            with mock.patch.dict(os.environ, {"HOME": str(home_dir), "USERPROFILE": str(home_dir)}, clear=True):
+                self.assertEqual(resolve_claude_projects_dir(), home_dir / ".claude" / "projects")
 
     def test_claude_code_watch_once_uploads_project_rounds_idempotently(self) -> None:
         collector, client = self.make_collector(capture_text=False)

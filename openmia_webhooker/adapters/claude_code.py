@@ -579,7 +579,7 @@ def run_claude_code(
         return 2
 
     command_path = resolve_claude_command(claude_command)
-    command = [command_path, *args, "--verbose", "--output-format", "stream-json", "--include-hook-events"]
+    command = [command_path, *args, "--verbose", "--output-format", "stream-json"]
     try:
         proc = popen_factory(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except FileNotFoundError:

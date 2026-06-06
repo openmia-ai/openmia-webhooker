@@ -1,22 +1,29 @@
 # OpenMIA Webhooker Deployment Guide
 
-这份指南用于部署 PyPI 版 OpenMIA Webhooker，让 Codex hook 事件和 Claude Code 本地事件被转换成 OpenMIA Runtime JSON v1，并通过现有 custom_json webhook 上传到 OpenMIA。
+This guide explains how to deploy OpenMIA Webhooker so local Codex hook events
+and Claude Code events are converted into OpenMIA Runtime JSON v1 payloads and
+uploaded through the existing OpenMIA `custom_json` webhook endpoint.
 
-本文假设 OpenMIA Webhooker 已经发布到 PyPI。Linux/macOS 示例使用 `python3` 和 POSIX shell，Windows 示例使用 PowerShell。
+The examples assume OpenMIA Webhooker is available from PyPI. Linux/macOS
+examples use `python3` and a POSIX shell. Windows examples use PowerShell.
 
 ```bash
 pip install openmia-webhooker
 ```
 
-并且 OpenMIA Webhooker 提供统一 CLI：
+OpenMIA Webhooker exposes one CLI:
 
 ```bash
 openmia-webhooker
 ```
 
-## 1. 功能结构
+For more OpenMIA trace concepts and product tutorials, see:
 
-部署后整体结构是：
+https://docs.openmia.ai/app/observation/traces
+
+## 1. Architecture
+
+After deployment, Codex events flow through this path:
 
 ```text
 Codex hooks
@@ -26,60 +33,73 @@ Codex hooks
   -> OpenMIA custom_json endpoint
 ```
 
-OpenMIA Webhooker 负责：
+OpenMIA Webhooker is responsible for:
 
-- 读取 Codex hook stdin payload。
-- 识别 `UserPromptSubmit`、`Stop`、`PreToolUse`、`PostToolUse` 事件。
-- 构造 Runtime JSON v1：session、trace、顶层 chat span、tool span、reasoning placeholder span。
-- 根据配置决定上传明文或 hash 摘要。
-- 维护本地 state，把同一个本地 session 稳定映射到一个 trace，并把多轮对话追加为新的顶层 chat spans。
-- 上传到现有 OpenMIA custom_json ingestion endpoint；服务端只负责 raw-first 存储、权限隔离和标准化写入。
+- Reading Codex hook payloads from stdin.
+- Recognizing `UserPromptSubmit`, `Stop`, `PreToolUse`, and `PostToolUse`.
+- Building Runtime JSON v1 with sessions, traces, top-level chat spans, tool
+  spans, and reasoning placeholder spans.
+- Uploading either raw text or length/hash summaries based on configuration.
+- Maintaining local state so one local session maps to one stable trace, with
+  later conversation rounds appended as new top-level chat spans.
+- Uploading to the existing OpenMIA custom_json ingestion endpoint. The server
+  remains responsible for raw-first storage, tenant isolation, validation, and
+  normalized trace/span writes.
 
-Runtime JSON v1 使用 `schemaVersion = "openmia.runtime.v1"`。SDK/webhooker 侧负责理解 Codex hook 和 Claude Code stream-json 语义；OpenMIA app 服务端不再为每个本地工具复制一套来源专属语义 adapter。custom_json endpoint 保持不变，只是 payload schema 升级。
+Runtime JSON v1 uses `schemaVersion = "openmia.runtime.v1"`. Webhooker owns the
+Codex hook and Claude Code stream-json semantics; the OpenMIA app server does
+not need a separate adapter for every local tool. The endpoint remains the
+existing `custom_json` webhook endpoint.
 
-本地仍需要维护这些文件。`~` 表示当前用户 home 目录，Windows 下等价于 `$HOME` 或 `$env:USERPROFILE`：
+OpenMIA Webhooker uses these local files. `~` means the current user's home
+directory. On Windows, it is equivalent to `$HOME` or `$env:USERPROFILE`.
 
-- `~/.codex/openmia-custom-json.env`: OpenMIA endpoint、ingest key、正文采集开关。
-- `~/.codex/config.toml`: Codex hook 配置。
-- `~/.codex/openmia-custom-json/collector.log`: OpenMIA Webhooker 上传日志。
-- `~/.codex/openmia-custom-json/state/*.json`: 会话关联 state。
+- `~/.codex/openmia-custom-json.env`: OpenMIA endpoint, ingest key, and text
+  capture settings.
+- `~/.codex/config.toml`: Codex hook configuration.
+- `~/.codex/openmia-custom-json/collector.log`: upload status log.
+- `~/.codex/openmia-custom-json/state/*.json`: local session state.
 
-Codex 和 Claude Code 当前遵循同一个展示语义：trace 表示本地 session，每轮用户对话是 `parentId = null` 的顶层 `chat` span，并带稳定 `roundId`。SDK 不发送空 `round` span，也不发送 session summary workflow span。
+Codex and Claude Code share the same display semantics: a trace represents one
+local session, and each user round is a top-level `chat` span with
+`parentId = null` and a stable `roundId`. Webhooker does not emit empty `round`
+spans or session-summary workflow spans.
 
-## 2. 前置条件
+## 2. Prerequisites
 
-目标机器需要：
+The target machine needs:
 
-- Python 3.10 或更高版本。
-- `pip` 可用。
-- Codex 已安装并能正常运行。
-- 一个 OpenMIA custom_json ingestion endpoint。
-- 一个 OpenMIA custom_json ingest key。
-- 目标机器可以访问 `https://app.openmia.ai`。
+- Python 3.10 or newer.
+- `pip`.
+- Codex installed and working, if deploying Codex hooks.
+- Claude Code installed and working, if deploying Claude Code collection.
+- An OpenMIA custom_json ingestion endpoint.
+- An OpenMIA custom_json ingest key.
+- Network access to `https://app.openmia.ai`.
 
-检查 Python 和 pip：
+Check Python and pip:
 
 ```bash
 python3 --version
 python3 -m pip --version
 ```
 
-Windows PowerShell：
+Windows PowerShell:
 
 ```powershell
 py --version
 py -m pip --version
 ```
 
-## 3. 安装 OpenMIA Webhooker
+## 3. Install OpenMIA Webhooker
 
-Linux/macOS 推荐使用当前用户安装：
+Linux/macOS user install:
 
 ```bash
 python3 -m pip install --user openmia-webhooker
 ```
 
-如果你使用虚拟环境：
+Virtual environment:
 
 ```bash
 python3 -m venv ~/.venvs/openmia
@@ -87,13 +107,13 @@ source ~/.venvs/openmia/bin/activate
 python3 -m pip install openmia-webhooker
 ```
 
-Windows PowerShell 推荐使用当前用户安装：
+Windows PowerShell user install:
 
 ```powershell
 py -m pip install --user openmia-webhooker
 ```
 
-虚拟环境部署：
+Windows virtual environment:
 
 ```powershell
 py -m venv $HOME\.venvs\openmia
@@ -101,136 +121,135 @@ py -m venv $HOME\.venvs\openmia
 py -m pip install openmia-webhooker
 ```
 
-确认 CLI 可用：
+Verify the CLI:
 
 ```bash
 openmia-webhooker --help
 ```
 
-如果提示 `command not found`，检查用户级 pip bin 目录是否在 `PATH`：
+If the command is not on `PATH`, either add the Python user scripts directory to
+`PATH` or use the absolute executable path in hook commands.
+
+Linux/macOS:
 
 ```bash
 python3 -m site --user-base
 ```
 
-常见路径是：
+The scripts directory is usually:
 
 ```text
 ~/.local/bin
 ```
 
-可以临时加入：
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-生产环境建议把这行写入 shell profile，或在 Codex hook command 中使用 CLI 的绝对路径。
-
-Windows PowerShell 可以查看用户级 scripts 目录：
+Windows PowerShell:
 
 ```powershell
 py -m site --user-site
 ```
 
-如果 `openmia-webhooker` 不在 `PATH`，可以把 Python 用户 scripts 目录加入用户 PATH，或者在 Codex hook command 中使用完整的 `openmia-webhooker.exe` 路径。
+The corresponding scripts directory is usually under:
 
-安装后建议先运行本地诊断：
+```text
+%APPDATA%\Python\Python3xx\Scripts
+```
+
+Run diagnostics:
 
 ```bash
 openmia-webhooker doctor
 ```
 
-Windows PowerShell：
+## 4. Configure OpenMIA
 
-```powershell
-openmia-webhooker doctor
-```
-
-## 4. 配置 OpenMIA
-
-创建目录：
+Create the state directory:
 
 ```bash
 mkdir -p ~/.codex/openmia-custom-json/state
 ```
 
-Windows PowerShell：
+Windows PowerShell:
 
 ```powershell
 New-Item -ItemType Directory -Force "$HOME\.codex\openmia-custom-json\state" | Out-Null
 ```
 
-创建 `~/.codex/openmia-custom-json.env`：
+Create `~/.codex/openmia-custom-json.env`:
 
 ```bash
 OPENMIA_CUSTOM_JSON_ENDPOINT=https://app.openmia.ai/api/observation/webhooks/custom_json?payload_type=json
 OPENMIA_CUSTOM_JSON_INGEST_KEY=<your_openmia_ingest_key>
-OPENMIA_CAPTURE_TEXT=false
+OPENMIA_CAPTURE_TEXT=true
 ```
 
-Windows PowerShell 可用记事本或下面命令创建 `$HOME\.codex\openmia-custom-json.env`：
+Windows PowerShell:
 
 ```powershell
 @"
 OPENMIA_CUSTOM_JSON_ENDPOINT=https://app.openmia.ai/api/observation/webhooks/custom_json?payload_type=json
 OPENMIA_CUSTOM_JSON_INGEST_KEY=<your_openmia_ingest_key>
-OPENMIA_CAPTURE_TEXT=false
+OPENMIA_CAPTURE_TEXT=true
 "@ | Set-Content -Encoding utf8 "$HOME\.codex\openmia-custom-json.env"
 ```
 
-字段说明：
+Fields:
 
-- `OPENMIA_CUSTOM_JSON_ENDPOINT`: OpenMIA custom_json webhook 地址。
-- `OPENMIA_CUSTOM_JSON_INGEST_KEY`: OpenMIA ingest key。不要提交到 Git。
-- `OPENMIA_CAPTURE_TEXT`: 是否上传用户输入、工具输入输出、assistant 输出等明文。
+- `OPENMIA_CUSTOM_JSON_ENDPOINT`: OpenMIA custom_json webhook URL.
+- `OPENMIA_CUSTOM_JSON_INGEST_KEY`: OpenMIA ingest key. Do not commit it.
+- `OPENMIA_CAPTURE_TEXT`: whether to upload prompt text, tool input/output,
+  and assistant output. The default is `true` when the variable is omitted.
 
-推荐生产环境先用：
+The default uploads raw text so traces are complete in OpenMIA. If your privacy
+policy does not allow uploading raw text, explicitly disable it:
 
 ```bash
 OPENMIA_CAPTURE_TEXT=false
 ```
 
-这样只上传长度和 sha256 hash，不上传正文。确认隐私策略允许后，再改成：
+When disabled, Webhooker uploads length and sha256 summaries instead of raw
+text. Re-enable full traces with:
 
 ```bash
 OPENMIA_CAPTURE_TEXT=true
 ```
 
-限制 env 文件权限：
+On Linux/macOS, restrict env file permissions:
 
 ```bash
 chmod 600 ~/.codex/openmia-custom-json.env
 ```
 
-路径解析优先级：
+Path resolution priority:
 
-- 代码中显式传入的 `base_dir`。
-- `OPENMIA_HOME`。
-- 兼容变量 `CODEX_HOME`。
-- 默认 `~/.codex`。
+1. Explicit `base_dir` passed in code.
+2. `OPENMIA_HOME`.
+3. Compatible `CODEX_HOME`.
+4. `Path.home() / ".codex"`.
 
-高级覆盖变量：
+Advanced path overrides:
 
-- `OPENMIA_CUSTOM_JSON_ENV_FILE`: 指定 env 文件完整路径。
-- `OPENMIA_STATE_DIR`: 指定 state 目录完整路径。
-- `OPENMIA_LOG_PATH`: 指定 collector log 完整路径。
+- `OPENMIA_CUSTOM_JSON_ENV_FILE`: full path to the env file.
+- `OPENMIA_STATE_DIR`: full path to the state directory.
+- `OPENMIA_LOG_PATH`: full path to `collector.log`.
 
-Linux/macOS 临时覆盖示例：
+Temporary Linux/macOS override:
 
 ```bash
 export OPENMIA_HOME="$HOME/.codex"
 ```
 
-Windows PowerShell 临时覆盖示例：
+Temporary Windows PowerShell override:
 
 ```powershell
 $env:OPENMIA_HOME = "$HOME\.codex"
 ```
 
-## 5. 启用 Codex Hooks
+## 5. Enable Codex Hooks
 
-把下面配置合并到 `~/.codex/config.toml`。如果已经有同名 hook block，保留一份即可。
+Merge the following configuration into `~/.codex/config.toml`. If a hook block
+for the same event already exists, do not add a second top-level
+`[[hooks.<Event>]]` block. Instead, add the `[[hooks.<Event>.hooks]]` command
+entry under the existing event block so each event has only one top-level block.
 
 ```toml
 [[hooks.UserPromptSubmit]]
@@ -248,6 +267,7 @@ timeout = 20
 statusMessage = "Finalizing OpenMIA custom telemetry"
 
 [[hooks.PreToolUse]]
+matcher = "*"
 [[hooks.PreToolUse.hooks]]
 type = "command"
 command = "openmia-webhooker codex pre_tool_use"
@@ -255,6 +275,7 @@ timeout = 15
 statusMessage = "Sending OpenMIA tool telemetry"
 
 [[hooks.PostToolUse]]
+matcher = "*"
 [[hooks.PostToolUse.hooks]]
 type = "command"
 command = "openmia-webhooker codex post_tool_use"
@@ -262,105 +283,132 @@ timeout = 20
 statusMessage = "Sending OpenMIA tool result telemetry"
 ```
 
-如果 Codex hook 环境找不到 `openmia-webhooker`，使用绝对路径，例如：
+If the Codex hook environment cannot find `openmia-webhooker`, use an absolute
+path:
 
 ```toml
 command = "/home/you/.local/bin/openmia-webhooker codex user_prompt_submit"
 ```
 
-虚拟环境部署时可以这样写：
+Virtual environment:
 
 ```toml
 command = "/home/you/.venvs/openmia/bin/openmia-webhooker codex user_prompt_submit"
 ```
 
-Windows PowerShell 用户级安装时，hook command 可以使用 `openmia-webhooker.exe` 的完整路径，例如：
+Windows user install with a path that does not contain spaces:
 
 ```toml
 command = "C:\\Users\\you\\AppData\\Roaming\\Python\\Python313\\Scripts\\openmia-webhooker.exe codex user_prompt_submit"
 ```
 
-Windows 虚拟环境部署时：
+If the Windows user path contains spaces, create a `.cmd` wrapper in a path
+without spaces. This avoids quoting differences between hook runners and
+Windows shells.
+
+```bat
+@echo off
+"C:\Users\you name\AppData\Roaming\Python\Python313\Scripts\openmia-webhooker.exe" %*
+```
+
+Then use the wrapper in `config.toml`:
+
+```toml
+command = "W:\\tools\\openmia-webhooker-codex-hook.cmd codex user_prompt_submit"
+```
+
+Windows virtual environment with a path that does not contain spaces:
 
 ```toml
 command = "C:\\Users\\you\\.venvs\\openmia\\Scripts\\openmia-webhooker.exe codex user_prompt_submit"
 ```
 
-## 6. 本地 Dry-Run 验证
+## 6. Local Dry-Run Validation
 
-dry-run 不会上传数据，只会打印将要发送的 JSON。
+Dry-run commands do not upload data. They print the JSON payload that would be
+sent. To avoid leaking sensitive text in local terminals and CI logs, dry-run
+output is redacted. Even when `OPENMIA_CAPTURE_TEXT=true`, do not use dry-run
+output to decide whether the OpenMIA platform will show raw text. Use
+`openmia-webhooker doctor --json` to confirm `capture_text`, then verify raw
+text in a real uploaded trace.
+
+Self-test:
 
 ```bash
 openmia-webhooker codex self_test --dry-run
 ```
 
-模拟一次用户输入：
+Simulate a user prompt:
 
 ```bash
 printf '{"conversation_id":"deploy_test","prompt":"hello from dry run"}' \
   | openmia-webhooker codex user_prompt_submit --dry-run
 ```
 
-模拟一次工具调用开始：
+Simulate a tool call start:
 
 ```bash
 printf '{"conversation_id":"deploy_test","tool_call_id":"call-1","tool_name":"exec_command","cmd":"python3 --version"}' \
   | openmia-webhooker codex pre_tool_use --dry-run
 ```
 
-模拟一次工具调用结束：
+Simulate a tool call result:
 
 ```bash
 printf '{"conversation_id":"deploy_test","tool_call_id":"call-1","tool_name":"exec_command","stdout":"Python 3.x"}' \
   | openmia-webhooker codex post_tool_use --dry-run
 ```
 
-模拟一次停止事件：
+Simulate a stop event:
 
 ```bash
 printf '{"conversation_id":"deploy_test","output":"completed"}' \
   | openmia-webhooker codex stop --dry-run
 ```
 
-如果这些命令都输出 JSON，说明 OpenMIA Webhooker、CLI、配置读取和 state 写入基本正常。
+If these commands print JSON, the CLI, config loading, and local state writes are
+working.
 
-## 7. 真实上传验证
+## 7. Real Upload Validation
 
-确认 ingest key 已配置后，运行：
+After configuring the ingest key, run:
 
 ```bash
 openmia-webhooker codex self_test
 ```
 
-查看日志：
+Check the log:
 
 ```bash
 tail -n 20 ~/.codex/openmia-custom-json/collector.log
 ```
 
-成功时会看到类似：
+Success looks like:
 
 ```text
 "message": "uploaded status 200"
 "success": true
 ```
 
-然后打开 OpenMIA 控制台，按最近时间查找 `Codex custom JSON collector self-test` 或 `Codex session`。
+Then open the OpenMIA console and search recent traces for
+`Codex custom JSON collector self-test` or `Codex session`.
 
-## 8. Claude Code 支持
+## 8. Claude Code Support
 
-Claude Code 有三种入口，全部输出 `schemaVersion = "openmia.runtime.v1"`，并复用现有 custom_json endpoint。
+Claude Code has three entry points. All emit `schemaVersion =
+"openmia.runtime.v1"` and use the same custom_json endpoint.
 
 ### stdin adapter
 
-用于管道、CI 和调试。它从 stdin 读取 Claude Code `stream-json`：
+Use this for pipes, CI, and debugging. It reads Claude Code `stream-json` from
+stdin:
 
 ```bash
-claude -p "hello" --verbose --output-format stream-json --include-hook-events \
+claude -p "hello" --verbose --output-format stream-json \
   | openmia-webhooker claude-code
 ```
 
-dry-run：
+Dry-run:
 
 ```bash
 printf '{"type":"system","subtype":"init","session_id":"claude-test"}\n' \
@@ -369,160 +417,211 @@ printf '{"type":"system","subtype":"init","session_id":"claude-test"}\n' \
 
 ### non-interactive wrapper
 
-用于不想手动拼 Claude Code `stream-json` 参数的场景。只支持 `--print/-p` 非交互模式：
+Use this when you do not want to manually pass Claude Code `stream-json`
+arguments. It supports only non-interactive `--print/-p` runs:
 
 ```bash
 openmia-webhooker claude-code-run -- -p "hello"
 ```
 
-OpenMIA Webhooker 会自动追加：
+OpenMIA Webhooker automatically appends:
 
 ```text
---verbose --output-format stream-json --include-hook-events
+--verbose --output-format stream-json
 ```
 
-上传完成后，wrapper 会把 Claude Code 最终 result 文本输出到 stdout。`--dry-run` 时只输出 OpenMIA payload，不上传。
+After upload, the wrapper prints Claude Code's final result text to stdout.
+With `--dry-run`, it prints the OpenMIA payload and does not upload:
 
 ```bash
 openmia-webhooker claude-code-run --dry-run -- -p "hello"
 ```
 
+If the Claude executable is not named `claude`, pass it explicitly:
+
+```bash
+openmia-webhooker claude-code-run --claude-command /path/to/claude -- -p "hello"
+```
+
+Windows PowerShell:
+
+```powershell
+openmia-webhooker claude-code-run --claude-command "C:\Path\To\claude.exe" -- -p "hello"
+```
+
+If your installed Claude Code version rejects an argument, run:
+
+```bash
+claude --help
+```
+
+and prefer the stdin adapter form shown above. Current Claude Code versions
+support `--verbose --output-format stream-json`; older instructions that include
+`--include-hook-events` may fail on newer Claude Code releases.
+
 ### local JSONL watcher
 
-用于已有 Claude Code CLI 调用没有被 wrapper 包住的情况。默认读取：
+Use this when existing Claude Code CLI calls are not wrapped. By default it
+reads:
 
 ```text
 ~/.claude/projects/**/*.jsonl
 ```
 
-一次性扫描：
+One-time scan:
 
 ```bash
 openmia-webhooker claude-code-watch --once
 ```
 
-持续跟随，默认等待 round 空闲 10 秒后上传，避免过早上传不完整 assistant/tool 事件：
+Follow mode waits until a round has been idle for 10 seconds before upload, so
+it does not upload incomplete assistant/tool events too early:
 
 ```bash
 openmia-webhooker claude-code-watch --follow
 ```
 
-`--follow` 默认会把 watcher 状态写到 stderr，不会污染 stdout 的 dry-run JSON。状态内容包括 projects dir、dry-run、idle flush、poll interval、ready/pending rounds、上传/打印/跳过/失败数量、下一次扫描倒计时和 pending flush 倒计时。
+`--follow` writes status to stderr. TTYs use an inline one-line refresh by
+default; logs and CI fall back to line output. Status includes the projects
+directory, dry-run state, idle flush interval, poll interval, ready/pending
+round counts, uploaded/printed/skipped/failed counts, next scan countdown, and
+pending flush countdown.
 
-状态显示默认使用 `auto`：
-
-- TTY 终端里使用单行原地刷新，类似 `nvidia-smi`/`watch` 的轻量效果。
-- 输出被重定向到日志、CI 或非 TTY 时，自动退回逐行日志。
-
-可显式指定状态样式：
+Status controls:
 
 ```bash
 openmia-webhooker claude-code-watch --follow --status-style auto
 openmia-webhooker claude-code-watch --follow --status-style inline
 openmia-webhooker claude-code-watch --follow --status-style line
 openmia-webhooker claude-code-watch --follow --status-style off
-```
-
-脚本环境也可以直接关闭状态显示：
-
-```bash
 openmia-webhooker claude-code-watch --follow --no-status
 ```
 
-自定义项目目录：
+Custom projects directory:
 
 ```bash
 openmia-webhooker claude-code-watch --once --projects-dir /path/to/.claude/projects
 ```
 
-Windows PowerShell：
+Windows PowerShell:
 
 ```powershell
 openmia-webhooker claude-code-watch --once --projects-dir "$HOME\.claude\projects"
 ```
 
-watcher 只在真实用户 prompt 行开始新 round。Claude Code JSONL 里有些 `type=user` 行是 tool result，SDK 会继续把这些事件归入当前 round。后续 assistant/tool/result/error 事件归入当前 round，直到下一个真实用户 prompt 或 idle flush。已上传 round 会记录在 `~/.codex/openmia-custom-json/state`，重复 `--once` 不会重复上传。
+The watcher starts a new round only on real user prompt lines. Some Claude Code
+JSONL `type=user` rows are tool results; Webhooker keeps those inside the
+current round. Later assistant/tool/result/error events stay in the current
+round until the next real user prompt or idle flush. Uploaded rounds are stored
+in `~/.codex/openmia-custom-json/state`, so repeated `--once` scans do not
+upload the same round again.
 
-如果 Claude Code 可执行文件不是 `claude`，可以使用：
-
-```bash
-openmia-webhooker claude-code-run --claude-command /path/to/claude -- -p "hello"
-```
-
-Windows PowerShell：
-
-```powershell
-openmia-webhooker claude-code-run --claude-command "C:\Path\To\claude.cmd" -- -p "hello"
-```
-
-也可以通过环境变量配置：
+Environment overrides:
 
 ```bash
 export OPENMIA_CLAUDE_COMMAND="/path/to/claude"
 export OPENMIA_CLAUDE_PROJECTS_DIR="$HOME/.claude/projects"
 ```
 
-Windows PowerShell：
+Windows PowerShell:
 
 ```powershell
-$env:OPENMIA_CLAUDE_COMMAND = "C:\Path\To\claude.cmd"
+$env:OPENMIA_CLAUDE_COMMAND = "C:\Path\To\claude.exe"
 $env:OPENMIA_CLAUDE_PROJECTS_DIR = "$HOME\.claude\projects"
 ```
 
-### hidden banner
+### Windows wrappers
 
-OpenMIA Webhooker 还包含一个隐藏的本地 banner：
+For Windows machines with spaces in user paths, prefer `.cmd` wrappers in a path
+without spaces.
 
-```bash
-openmia-webhooker openmia
+Non-interactive Claude wrapper:
+
+```bat
+@echo off
+"C:\Users\you name\.local\bin\claude.exe" %* --verbose --output-format stream-json | "C:\Users\you name\AppData\Roaming\Python\Python312\Scripts\openmia-webhooker.exe" claude-code
 ```
 
-该命令只在本地 stdout 打印 ASCII art，不上传、不写 state、不写日志，也不会出现在顶层 `--help` 中。
+Watcher wrapper:
 
-## 9. 让 Codex 生效
+```bat
+@echo off
+"C:\Users\you name\AppData\Roaming\Python\Python312\Scripts\openmia-webhooker.exe" claude-code-watch --follow --projects-dir "C:\Users\you name\.claude\projects" --status-style line %*
+```
 
-更新 `config.toml` 后：
+Start the watcher in the background from PowerShell:
 
-1. 关闭当前 Codex/IDE 会话。
-2. 重新打开 Codex。
-3. 发送一条简单消息。
-4. 让 Codex 执行一个小工具调用，例如 `python3 --version`。
-5. 检查 `~/.codex/openmia-custom-json/collector.log` 是否出现新的 `uploaded status 200`。
+```powershell
+Start-Process -FilePath "cmd.exe" `
+  -ArgumentList @("/c", "W:\tools\openmia-claude-watch.cmd") `
+  -WindowStyle Hidden
+```
 
-有些 Codex 环境首次运行 hook 时会要求信任 hook 命令。确认命令路径和 OpenMIA Webhooker 来源无误后，允许该 hook。
+## 9. Make Codex Hooks Take Effect
 
-## 10. 日志和排障
+After updating `config.toml`:
 
-先运行本地诊断。它不会上传、不写 state，也不会打印 ingest key：
+1. Close the current Codex/IDE session.
+2. Reopen Codex.
+3. Send a simple message.
+4. Let Codex run a small tool call, such as `python3 --version`.
+5. Check `~/.codex/openmia-custom-json/collector.log` for a new
+   `uploaded status 200` entry.
+
+Some Codex environments ask you to trust hook commands the first time they run.
+After confirming the command path and Webhooker source, allow the hook.
+
+## 10. Logs and Troubleshooting
+
+Run diagnostics first. It does not upload, does not write state, and does not
+print the ingest key:
 
 ```bash
 openmia-webhooker doctor
 ```
 
-机器可读输出：
+Machine-readable output:
 
 ```bash
 openmia-webhooker doctor --json
 ```
 
-查看最近日志：
+View recent logs:
 
 ```bash
 tail -n 50 ~/.codex/openmia-custom-json/collector.log
 ```
 
-常见问题：
+`collector.log` records upload status, HTTP status, trace id, and server
+responses only. It does not store prompts, tool input/output, or assistant
+responses. Raw text upload is controlled by `OPENMIA_CAPTURE_TEXT` and appears
+in the OpenMIA trace payload.
 
-- `openmia-webhooker: command not found`: CLI 不在 `PATH`。改用绝对路径，或把 `~/.local/bin` 加入 `PATH`。
-- `OPENMIA_CUSTOM_JSON_INGEST_KEY missing`: `.env` 文件不存在、路径不对，或 key 没写。
-- Claude command 找不到: 使用 `openmia-webhooker doctor` 查看解析结果，再通过 `--claude-command` 或 `OPENMIA_CLAUDE_COMMAND` 指定。
-- `http_error`: endpoint 或 ingest key 不正确，或者 OpenMIA 拒绝了 payload。
-- `upload_failed`: 网络不可达、DNS 问题、TLS 问题，或 OpenMIA 服务暂时不可用。
-- `state_write_failed`: state 主目录和 fallback 目录都不可写。OpenMIA Webhooker 会先尝试 `~/.codex/openmia-custom-json/state`，主目录不可写时自动使用 `/tmp/openmia-custom-json/state`。
-- OpenMIA 没看到数据但日志 200: 检查 OpenMIA 的时间筛选、项目空间、ingestion job/raw payload 页面。
-- Claude Code CLI 调用没有自动 trace: 默认不会覆盖系统 `claude` 命令。使用 `openmia-webhooker claude-code-run -- -p ...` 包装非交互调用，或后台运行 `openmia-webhooker claude-code-watch --follow` 读取本地 JSONL。
+Common issues:
 
-修复目录权限：
+- `openmia-webhooker: command not found`: CLI is not on `PATH`. Use an absolute
+  path or add the Python scripts directory to `PATH`.
+- `OPENMIA_CUSTOM_JSON_INGEST_KEY missing`: env file is missing, path is wrong,
+  or the key is not set.
+- `capture_text` is `false`: `openmia-webhooker doctor --json` shows the current
+  value. Set `OPENMIA_CAPTURE_TEXT=true` if the platform trace should include
+  raw text.
+- Claude command not found: run `openmia-webhooker doctor`, then set
+  `--claude-command` or `OPENMIA_CLAUDE_COMMAND`.
+- Claude returns `Not logged in`: run `claude auth login` in a real terminal.
+- `http_error`: endpoint or ingest key is wrong, or OpenMIA rejected the
+  payload.
+- `upload_failed`: network, DNS, TLS, or OpenMIA availability issue.
+- `state_write_failed`: primary and fallback state directories are not
+  writable.
+- OpenMIA does not show data even though logs show HTTP 200: check OpenMIA time
+  filters, workspace/project selection, ingestion job pages, and raw payload
+  pages.
+- Claude Code CLI calls do not automatically trace: Webhooker does not replace
+  the system `claude` command. Use `openmia-webhooker claude-code-run -- -p ...`
+  or run `openmia-webhooker claude-code-watch --follow`.
+
+Repair directory permissions on Linux/macOS:
 
 ```bash
 mkdir -p ~/.codex/openmia-custom-json/state
@@ -531,34 +630,41 @@ chmod 700 ~/.codex/openmia-custom-json/state
 chmod 600 ~/.codex/openmia-custom-json.env
 ```
 
-Windows 权限通常不需要 `chmod`。如果遇到权限问题，确认当前用户能读写 `$HOME\.codex\openmia-custom-json`，或者用 `OPENMIA_HOME`、`OPENMIA_STATE_DIR`、`OPENMIA_LOG_PATH` 指向可写位置。
+Windows usually does not need `chmod`. If permission problems occur, confirm the
+current user can read/write `$HOME\.codex\openmia-custom-json`, or use
+`OPENMIA_HOME`, `OPENMIA_STATE_DIR`, and `OPENMIA_LOG_PATH` to point to writable
+locations.
 
-## 11. 隐私和安全
+## 11. Privacy and Security
 
-- 不要把 `~/.codex/openmia-custom-json.env` 提交到 Git。
-- 不要把 ingest key 发给别人或贴到 issue、日志、截图里。
-- 如果 key 曾经公开展示，去 OpenMIA 轮换一个新 key。
-- 生产环境默认建议 `OPENMIA_CAPTURE_TEXT=false`。
-- 如果启用 `OPENMIA_CAPTURE_TEXT=true`，先确认团队允许采集 prompt、工具输入输出和回复正文。
-- OpenMIA Webhooker 会对常见敏感字段做脱敏，但业务数据是否允许上传仍由你的隐私策略决定。
-- Codex hidden reasoning 不会被 hook 暴露，因此 OpenMIA Webhooker 只会上报 reasoning placeholder span，不会上报隐藏推理内容。
+- Do not commit `~/.codex/openmia-custom-json.env`.
+- Do not share ingest keys in issues, logs, screenshots, or chat.
+- If a key was exposed, rotate it in OpenMIA.
+- `OPENMIA_CAPTURE_TEXT=true` is the default and uploads prompts, tool
+  input/output, and assistant responses so traces are complete.
+- If your privacy policy does not allow raw text collection, set
+  `OPENMIA_CAPTURE_TEXT=false`.
+- Webhooker redacts common sensitive fields, but your privacy policy still
+  determines whether business data may be uploaded.
+- Codex hidden reasoning is not exposed to hooks. Webhooker reports reasoning
+  placeholder spans only; it never uploads hidden reasoning content.
 
-## 12. 升级 OpenMIA Webhooker
+## 12. Upgrade OpenMIA Webhooker
 
-升级到最新版本：
+Upgrade to the latest version:
 
 ```bash
 python3 -m pip install --user --upgrade openmia-webhooker
 ```
 
-虚拟环境部署时：
+Virtual environment:
 
 ```bash
 source ~/.venvs/openmia/bin/activate
 python3 -m pip install --upgrade openmia-webhooker
 ```
 
-升级后验证：
+Verify after upgrade:
 
 ```bash
 openmia-webhooker --help
@@ -568,35 +674,34 @@ openmia-webhooker claude-code-watch --once --dry-run
 openmia-webhooker codex self_test
 ```
 
-然后重启 Codex，并观察日志。
+Then restart Codex and inspect logs.
 
-## 13. 迁移到新机器
+## 13. Migrate to a New Machine
 
-新机器只需要：
+On a new machine:
 
-1. 安装 OpenMIA Webhooker：
+1. Install OpenMIA Webhooker.
+2. Create `~/.codex/openmia-custom-json.env`.
+3. Add Codex hook configuration to `~/.codex/config.toml`.
+4. Run dry-run and real self-test validation.
+5. Restart Codex.
 
-```bash
-python3 -m pip install --user openmia-webhooker
-```
+Usually do not copy old `state/*.json` files unless you intentionally want to
+preserve old local session associations.
 
-2. 创建 `~/.codex/openmia-custom-json.env`。
-3. 在 `~/.codex/config.toml` 加入 hook 配置。
-4. 运行 dry-run 和真实 self-test。
-5. 重启 Codex。
+## 14. Quick Checklist
 
-通常不要复制旧机器的 `state/*.json`，除非你明确想保留旧会话关联。
-
-## 14. 快速检查清单
-
-- `python3 --version` 正常。
-- `python3 -m pip --version` 正常。
-- `python3 -m pip show openmia-webhooker` 能看到 OpenMIA Webhooker。
-- `openmia-webhooker --help` 正常。
-- `openmia-webhooker doctor` 能显示 env/state/log 路径，且不会打印 ingest key。
-- `~/.codex/openmia-custom-json.env` 存在，权限为 `600`。
-- `~/.codex/config.toml` 已配置四个 hook。
-- `openmia-webhooker codex self_test --dry-run` 能输出 JSON。
-- `openmia-webhooker claude-code --dry-run`、`claude-code-run --help`、`claude-code-watch --help` 正常。
-- `openmia-webhooker codex self_test` 能上传成功。
-- 重启 Codex 后，真实对话事件能出现在 OpenMIA。
+- `python3 --version` works.
+- `python3 -m pip --version` works.
+- `python3 -m pip show openmia-webhooker` finds the package.
+- `openmia-webhooker --help` works.
+- `openmia-webhooker doctor` shows env/state/log paths and does not print the
+  ingest key.
+- `openmia-webhooker doctor --json` shows the expected `capture_text` value.
+- `~/.codex/openmia-custom-json.env` exists.
+- `~/.codex/config.toml` has the four Codex hooks.
+- `openmia-webhooker codex self_test --dry-run` prints JSON.
+- `openmia-webhooker claude-code --dry-run`, `claude-code-run --help`, and
+  `claude-code-watch --help` work.
+- `openmia-webhooker codex self_test` uploads successfully.
+- After restarting Codex, real conversation events appear in OpenMIA.

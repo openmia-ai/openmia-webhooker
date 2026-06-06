@@ -236,9 +236,30 @@ class OpenMIAWebhookerTests(unittest.TestCase):
                 self.assertEqual(OpenMIAConfig.from_env().base_dir, codex_home)
 
     def test_config_base_dir_defaults_to_home_codex(self) -> None:
+        expected = pathlib.Path.home() / ".codex"
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(resolve_base_dir(), pathlib.Path.home() / ".codex")
-            self.assertEqual(OpenMIAConfig.from_env().base_dir, pathlib.Path.home() / ".codex")
+            self.assertEqual(resolve_base_dir(), expected)
+            self.assertEqual(OpenMIAConfig.from_env().base_dir, expected)
+
+    def test_config_capture_text_defaults_to_true_without_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {}, clear=True):
+                config = OpenMIAConfig.from_env(base_dir=pathlib.Path(tmpdir))
+
+            self.assertTrue(config.capture_text)
+
+    def test_config_capture_text_can_be_disabled_by_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_dir = pathlib.Path(tmpdir)
+            (base_dir / "openmia-custom-json.env").write_text(
+                "OPENMIA_CAPTURE_TEXT=false\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                config = OpenMIAConfig.from_env(base_dir=base_dir)
+
+            self.assertFalse(config.capture_text)
 
     def test_config_supports_env_state_and_log_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
