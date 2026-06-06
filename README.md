@@ -53,6 +53,7 @@ python3 -m pip install -e .
 ## CLI
 
 ```bash
+openmia-webhooker doctor
 openmia-webhooker codex self_test --dry-run
 openmia-webhooker codex user_prompt_submit
 openmia-webhooker claude-code --dry-run
@@ -63,11 +64,24 @@ openmia-webhooker claude-code-watch --once --dry-run
 Claude Code support has three modes:
 
 - `claude-code`: reads Claude Code `stream-json` from stdin for pipes, CI and debugging.
-- `claude-code-run`: wraps non-interactive `claude -p/--print`, forces `--verbose --output-format stream-json --include-hook-events`, uploads the trace, then prints Claude's final result.
-- `claude-code-watch`: reads `~/.claude/projects/**/*.jsonl` and uploads completed local rounds without wrapping the `claude` command.
+- `claude-code-run`: wraps non-interactive `claude -p/--print`, forces `--verbose --output-format stream-json --include-hook-events`, uploads the trace, then prints Claude's final result. Use `--claude-command` or `OPENMIA_CLAUDE_COMMAND` if the executable is not named `claude`.
+- `claude-code-watch`: reads Claude Code project JSONL files and uploads completed local rounds without wrapping the `claude` command. The default is `~/.claude/projects/**/*.jsonl`; use `--projects-dir` or `OPENMIA_CLAUDE_PROJECTS_DIR` to override it.
 
 See [docs/OPENMIA_CUSTOM_JSON_DEPLOYMENT.md](docs/OPENMIA_CUSTOM_JSON_DEPLOYMENT.md)
 for Codex deployment notes.
+
+## Configuration Paths
+
+Webhooker keeps the existing local file contract:
+
+- env file: `~/.codex/openmia-custom-json.env`
+- state: `~/.codex/openmia-custom-json/state`
+- log: `~/.codex/openmia-custom-json/collector.log`
+
+Path resolution is cross-platform and configurable. Explicit code config wins,
+then `OPENMIA_HOME`, then compatible `CODEX_HOME`, then `Path.home() / ".codex"`.
+Advanced overrides are available through `OPENMIA_CUSTOM_JSON_ENV_FILE`,
+`OPENMIA_STATE_DIR` and `OPENMIA_LOG_PATH`.
 
 ## Test
 

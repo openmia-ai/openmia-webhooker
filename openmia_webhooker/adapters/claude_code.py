@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -516,6 +518,7 @@ def run_claude_code(
     dry_run: bool = False,
     name: str = "Claude Code session",
     prompt: str | None = None,
+    claude_command: str | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     popen_factory: Any = subprocess.Popen,
@@ -536,11 +539,12 @@ def run_claude_code(
         print("claude-code-run manages --output-format; remove the conflicting Claude Code argument", file=err)
         return 2
 
-    command = ["claude", *args, "--verbose", "--output-format", "stream-json", "--include-hook-events"]
+    command_path = resolve_claude_command(claude_command)
+    command = [command_path, *args, "--verbose", "--output-format", "stream-json", "--include-hook-events"]
     try:
         proc = popen_factory(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except FileNotFoundError:
-        print("claude executable not found", file=err)
+        print(f"Claude command not found: {command_path}", file=err)
         return 127
     stdout_text, stderr_text = proc.communicate()
     if stderr_text:
@@ -561,7 +565,7 @@ def run_claude_code(
 
 def watch_project_logs(
     *,
-    projects_dir: pathlib.Path,
+    projects_dir: pathlib.Path | str | None = None,
     dry_run: bool = False,
     once: bool = True,
     follow: bool = False,
@@ -572,9 +576,10 @@ def watch_project_logs(
     max_iterations: int | None = None,
 ) -> int:
     active_collector = collector or ClaudeCodeCollector.from_env()
+    resolved_projects_dir = resolve_claude_projects_dir(projects_dir)
     iterations = 0
     while True:
-        rounds = _project_rounds(projects_dir)
+        rounds = _project_rounds(resolved_projects_dir)
         if follow:
             cutoff = time.time() - idle_flush_sec
             rounds = [round_item for round_item in rounds if round_item.updated_at <= cutoff]
@@ -762,6 +767,33 @@ def _prompt_from_claude_args(args: list[str]) -> str | None:
     return candidates[-1] if candidates else None
 
 
+def find_claude_command(claude_command: str | None = None, which_func: Any = shutil.which) -> tuple[str, bool]:
+    requested = claude_command or os.environ.get("OPENMIA_CLAUDE_COMMAND") or "claude"
+    resolved = which_func(requested)
+    if resolved:
+        return resolved, True
+    if requested == "claude":
+        for candidate in ("claude.cmd", "claude.exe", "claude.bat"):
+            resolved = which_func(candidate)
+            if resolved:
+                return resolved, True
+    return requested, False
+
+
+def resolve_claude_command(claude_command: str | None = None, which_func: Any = shutil.which) -> str:
+    command, _ = find_claude_command(claude_command, which_func=which_func)
+    return command
+
+
+def resolve_claude_projects_dir(projects_dir: pathlib.Path | str | None = None) -> pathlib.Path:
+    if projects_dir is not None:
+        return pathlib.Path(projects_dir).expanduser()
+    env_value = os.environ.get("OPENMIA_CLAUDE_PROJECTS_DIR")
+    if env_value:
+        return pathlib.Path(env_value).expanduser()
+    return pathlib.Path.home() / ".claude" / "projects"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="openmia-webhooker claude-code")
     parser.add_argument("--dry-run", action="store_true")
@@ -779,6 +811,7 @@ def run_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--name", default="Claude Code session")
     parser.add_argument("--prompt", default=None)
+    parser.add_argument("--claude-command", default=None)
     parser.add_argument("claude_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
@@ -787,6 +820,7 @@ def run_main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         name=args.name,
         prompt=args.prompt,
+        claude_command=args.claude_command,
     )
 
 
@@ -796,7 +830,7 @@ def watch_main(argv: list[str] | None = None) -> int:
     mode.add_argument("--once", action="store_true")
     mode.add_argument("--follow", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--projects-dir", type=pathlib.Path, default=pathlib.Path.home() / ".claude" / "projects")
+    parser.add_argument("--projects-dir", type=pathlib.Path, default=None)
     parser.add_argument("--idle-flush-sec", type=float, default=10.0)
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
     args = parser.parse_args(argv)

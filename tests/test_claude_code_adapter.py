@@ -8,12 +8,20 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from openmia_webhooker.adapters.claude_code import ClaudeCodeCollector, parse_jsonl, run_claude_code, watch_project_logs
+from openmia_webhooker.adapters.claude_code import (
+    ClaudeCodeCollector,
+    find_claude_command,
+    parse_jsonl,
+    resolve_claude_projects_dir,
+    run_claude_code,
+    watch_project_logs,
+)
 from openmia_webhooker.config import OpenMIAConfig
 
 
@@ -236,6 +244,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         exit_code = run_claude_code(
             ["--", "--print=hello"],
             dry_run=False,
+            claude_command="custom-claude",
             stdout=stdout,
             stderr=stderr,
             popen_factory=FakeClaudeProcess,
@@ -243,7 +252,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(FakeClaudeProcess.command[:2], ["claude", "--print=hello"])
+        self.assertEqual(FakeClaudeProcess.command[:2], ["custom-claude", "--print=hello"])
         self.assertIn("--verbose", FakeClaudeProcess.command)
         self.assertIn("--output-format", FakeClaudeProcess.command)
         self.assertIn("stream-json", FakeClaudeProcess.command)
@@ -273,6 +282,43 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("manages --output-format", stderr.getvalue())
         self.assertEqual(client.traces, [])
+
+    def test_find_claude_command_prefers_cli_value(self) -> None:
+        def fake_which(command: str) -> str | None:
+            return "/bin/custom-claude" if command == "custom-claude" else None
+
+        with mock.patch.dict(os.environ, {"OPENMIA_CLAUDE_COMMAND": "env-claude"}, clear=True):
+            self.assertEqual(find_claude_command("custom-claude", which_func=fake_which), ("/bin/custom-claude", True))
+
+    def test_find_claude_command_uses_env_value(self) -> None:
+        def fake_which(command: str) -> str | None:
+            return "/bin/env-claude" if command == "env-claude" else None
+
+        with mock.patch.dict(os.environ, {"OPENMIA_CLAUDE_COMMAND": "env-claude"}, clear=True):
+            self.assertEqual(find_claude_command(which_func=fake_which), ("/bin/env-claude", True))
+
+    def test_find_claude_command_falls_back_to_windows_suffix(self) -> None:
+        def fake_which(command: str) -> str | None:
+            return r"C:\bin\claude.cmd" if command == "claude.cmd" else None
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(find_claude_command(which_func=fake_which), (r"C:\bin\claude.cmd", True))
+
+    def test_find_claude_command_returns_requested_when_missing(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(find_claude_command("missing-claude", which_func=lambda _command: None), ("missing-claude", False))
+
+    def test_resolve_claude_projects_dir_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_dir = pathlib.Path(tmpdir) / "cli-projects"
+            env_dir = pathlib.Path(tmpdir) / "env-projects"
+
+            with mock.patch.dict(os.environ, {"OPENMIA_CLAUDE_PROJECTS_DIR": str(env_dir)}, clear=True):
+                self.assertEqual(resolve_claude_projects_dir(cli_dir), cli_dir)
+                self.assertEqual(resolve_claude_projects_dir(), env_dir)
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(resolve_claude_projects_dir(), pathlib.Path.home() / ".claude" / "projects")
 
     def test_claude_code_watch_once_uploads_project_rounds_idempotently(self) -> None:
         collector, client = self.make_collector(capture_text=False)

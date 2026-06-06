@@ -1,0 +1,57 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unittest:
+    name: ${{ matrix.os }} py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Compile modules
+        run: python -m py_compile openmia_webhooker/config.py openmia_webhooker/cli.py openmia_webhooker/doctor.py openmia_webhooker/adapters/codex.py openmia_webhooker/adapters/claude_code.py
+
+      - name: Run unit tests
+        run: python -m unittest discover tests
+
+      - name: CLI smoke
+        run: |
+          openmia-webhooker --help
+          openmia-webhooker doctor --json
+
+      - name: Windows env override smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:OPENMIA_HOME = "$env:RUNNER_TEMP\openmia-home"
+          openmia-webhooker doctor --json
+
+      - name: POSIX env override smoke
+        if: runner.os != 'Windows'
+        run: |
+          OPENMIA_HOME="$RUNNER_TEMP/openmia-home" openmia-webhooker doctor --json
+          CODEX_HOME="$RUNNER_TEMP/codex-home" openmia-webhooker doctor --json

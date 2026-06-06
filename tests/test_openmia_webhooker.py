@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from openmia_webhooker.adapters.codex import CodexCollector, parse_stdin
-from openmia_webhooker.config import OpenMIAConfig
+from openmia_webhooker.config import OpenMIAConfig, resolve_base_dir
 from openmia_webhooker.redaction import redacted_copy, summarize_value
 from openmia_webhooker.state import FileStateStore
 
@@ -194,10 +196,90 @@ class OpenMIAWebhookerTests(unittest.TestCase):
             self.assertIsNone(second_chat["parentId"])
             self.assertNotEqual(first_chat["id"], second_chat["id"])
 
+    def test_config_base_dir_prefers_explicit_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            explicit = pathlib.Path(tmpdir) / "explicit"
+            openmia_home = pathlib.Path(tmpdir) / "openmia-home"
+            codex_home = pathlib.Path(tmpdir) / "codex-home"
+
+            with mock.patch.dict(
+                os.environ,
+                {"OPENMIA_HOME": str(openmia_home), "CODEX_HOME": str(codex_home)},
+                clear=True,
+            ):
+                config = OpenMIAConfig.from_env(base_dir=explicit)
+
+            self.assertEqual(config.base_dir, explicit)
+            self.assertEqual(config.env_path, explicit / "openmia-custom-json.env")
+            self.assertEqual(config.state_dir, explicit / "openmia-custom-json" / "state")
+            self.assertEqual(config.log_path, explicit / "openmia-custom-json" / "collector.log")
+
+    def test_config_base_dir_prefers_openmia_home_over_codex_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openmia_home = pathlib.Path(tmpdir) / "openmia-home"
+            codex_home = pathlib.Path(tmpdir) / "codex-home"
+
+            with mock.patch.dict(
+                os.environ,
+                {"OPENMIA_HOME": str(openmia_home), "CODEX_HOME": str(codex_home)},
+                clear=True,
+            ):
+                self.assertEqual(resolve_base_dir(), openmia_home)
+                self.assertEqual(OpenMIAConfig.from_env().base_dir, openmia_home)
+
+    def test_config_base_dir_uses_codex_home_as_compat_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = pathlib.Path(tmpdir) / "codex-home"
+
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=True):
+                self.assertEqual(resolve_base_dir(), codex_home)
+                self.assertEqual(OpenMIAConfig.from_env().base_dir, codex_home)
+
+    def test_config_base_dir_defaults_to_home_codex(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_base_dir(), pathlib.Path.home() / ".codex")
+            self.assertEqual(OpenMIAConfig.from_env().base_dir, pathlib.Path.home() / ".codex")
+
+    def test_config_supports_env_state_and_log_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_dir = pathlib.Path(tmpdir) / "base"
+            env_file = pathlib.Path(tmpdir) / "custom.env"
+            state_dir = pathlib.Path(tmpdir) / "state-override"
+            log_path = pathlib.Path(tmpdir) / "logs" / "collector.log"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "OPENMIA_CUSTOM_JSON_INGEST_KEY=file_key",
+                        "OPENMIA_CAPTURE_TEXT=true",
+                        f"OPENMIA_STATE_DIR={state_dir}",
+                        f"OPENMIA_LOG_PATH={log_path}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "OPENMIA_CUSTOM_JSON_ENV_FILE": str(env_file),
+                    "OPENMIA_CUSTOM_JSON_INGEST_KEY": "",
+                },
+                clear=True,
+            ):
+                config = OpenMIAConfig.from_env(base_dir=base_dir)
+
+            self.assertEqual(config.env_path, env_file)
+            self.assertEqual(config.ingest_key, "file_key")
+            self.assertTrue(config.capture_text)
+            self.assertEqual(config.state_dir, state_dir)
+            self.assertEqual(config.log_path, log_path)
+
     def test_state_store_falls_back_when_primary_is_unwritable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fallback = pathlib.Path(tmpdir) / "fallback-state"
-            store = FileStateStore(pathlib.Path("/proc/openmia-unwritable-state"), fallback_state_dir=fallback)
+            primary_parent = pathlib.Path(tmpdir) / "not-a-directory"
+            primary_parent.write_text("block directory creation", encoding="utf-8")
+            store = FileStateStore(primary_parent / "state", fallback_state_dir=fallback)
             store.save("fallback-thread", {"thread_id": "fallback-thread", "value": 42})
 
             self.assertEqual(store.load("fallback-thread")["value"], 42)

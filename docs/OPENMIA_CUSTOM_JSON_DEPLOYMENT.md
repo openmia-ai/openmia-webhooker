@@ -2,7 +2,7 @@
 
 这份教程用于部署 PyPI 版 OpenMIA Webhooker，让 Codex 的 hook 事件被转换成 OpenMIA Runtime JSON v1，并通过现有 custom_json webhook 上传到 OpenMIA。
 
-本文假设 OpenMIA Webhooker 已经发布到 PyPI：
+本文假设 OpenMIA Webhooker 已经发布到 PyPI。Linux/macOS 示例使用 `python3` 和 POSIX shell，Windows 示例使用 PowerShell。
 
 ```bash
 pip install openmia-webhooker
@@ -37,7 +37,7 @@ OpenMIA Webhooker 负责：
 
 Runtime JSON v1 使用 `schemaVersion = "openmia.runtime.v1"`。SDK/webhooker 侧负责理解 Codex hook 和 Claude Code stream-json 语义；OpenMIA app 服务端不再为每个本地工具复制一套来源专属语义 adapter。custom_json endpoint 保持不变，只是 payload schema 升级。
 
-本地仍需要维护这些文件：
+本地仍需要维护这些文件。`~` 表示当前用户 home 目录，Windows 下等价于 `$HOME` 或 `$env:USERPROFILE`：
 
 - `~/.codex/openmia-custom-json.env`: OpenMIA endpoint、ingest key、正文采集开关。
 - `~/.codex/config.toml`: Codex hook 配置。
@@ -64,9 +64,16 @@ python3 --version
 python3 -m pip --version
 ```
 
+Windows PowerShell：
+
+```powershell
+py --version
+py -m pip --version
+```
+
 ## 3. 安装 OpenMIA Webhooker
 
-推荐使用当前用户安装：
+Linux/macOS 推荐使用当前用户安装：
 
 ```bash
 python3 -m pip install --user openmia-webhooker
@@ -78,6 +85,20 @@ python3 -m pip install --user openmia-webhooker
 python3 -m venv ~/.venvs/openmia
 source ~/.venvs/openmia/bin/activate
 python3 -m pip install openmia-webhooker
+```
+
+Windows PowerShell 推荐使用当前用户安装：
+
+```powershell
+py -m pip install --user openmia-webhooker
+```
+
+虚拟环境部署：
+
+```powershell
+py -m venv $HOME\.venvs\openmia
+& $HOME\.venvs\openmia\Scripts\Activate.ps1
+py -m pip install openmia-webhooker
 ```
 
 确认 CLI 可用：
@@ -106,6 +127,26 @@ export PATH="$HOME/.local/bin:$PATH"
 
 生产环境建议把这行写入 shell profile，或在 Codex hook command 中使用 CLI 的绝对路径。
 
+Windows PowerShell 可以查看用户级 scripts 目录：
+
+```powershell
+py -m site --user-site
+```
+
+如果 `openmia-webhooker` 不在 `PATH`，可以把 Python 用户 scripts 目录加入用户 PATH，或者在 Codex hook command 中使用完整的 `openmia-webhooker.exe` 路径。
+
+安装后建议先运行本地诊断：
+
+```bash
+openmia-webhooker doctor
+```
+
+Windows PowerShell：
+
+```powershell
+openmia-webhooker doctor
+```
+
 ## 4. 配置 OpenMIA
 
 创建目录：
@@ -114,12 +155,28 @@ export PATH="$HOME/.local/bin:$PATH"
 mkdir -p ~/.codex/openmia-custom-json/state
 ```
 
+Windows PowerShell：
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.codex\openmia-custom-json\state" | Out-Null
+```
+
 创建 `~/.codex/openmia-custom-json.env`：
 
 ```bash
 OPENMIA_CUSTOM_JSON_ENDPOINT=https://app.openmia.ai/api/observation/webhooks/custom_json?payload_type=json
 OPENMIA_CUSTOM_JSON_INGEST_KEY=<your_openmia_ingest_key>
 OPENMIA_CAPTURE_TEXT=false
+```
+
+Windows PowerShell 可用记事本或下面命令创建 `$HOME\.codex\openmia-custom-json.env`：
+
+```powershell
+@"
+OPENMIA_CUSTOM_JSON_ENDPOINT=https://app.openmia.ai/api/observation/webhooks/custom_json?payload_type=json
+OPENMIA_CUSTOM_JSON_INGEST_KEY=<your_openmia_ingest_key>
+OPENMIA_CAPTURE_TEXT=false
+"@ | Set-Content -Encoding utf8 "$HOME\.codex\openmia-custom-json.env"
 ```
 
 字段说明：
@@ -144,6 +201,31 @@ OPENMIA_CAPTURE_TEXT=true
 
 ```bash
 chmod 600 ~/.codex/openmia-custom-json.env
+```
+
+路径解析优先级：
+
+- 代码中显式传入的 `base_dir`。
+- `OPENMIA_HOME`。
+- 兼容变量 `CODEX_HOME`。
+- 默认 `~/.codex`。
+
+高级覆盖变量：
+
+- `OPENMIA_CUSTOM_JSON_ENV_FILE`: 指定 env 文件完整路径。
+- `OPENMIA_STATE_DIR`: 指定 state 目录完整路径。
+- `OPENMIA_LOG_PATH`: 指定 collector log 完整路径。
+
+Linux/macOS 临时覆盖示例：
+
+```bash
+export OPENMIA_HOME="$HOME/.codex"
+```
+
+Windows PowerShell 临时覆盖示例：
+
+```powershell
+$env:OPENMIA_HOME = "$HOME\.codex"
 ```
 
 ## 5. 启用 Codex Hooks
@@ -183,13 +265,25 @@ statusMessage = "Sending OpenMIA tool result telemetry"
 如果 Codex hook 环境找不到 `openmia-webhooker`，使用绝对路径，例如：
 
 ```toml
-command = "/root/.local/bin/openmia-webhooker codex user_prompt_submit"
+command = "/home/you/.local/bin/openmia-webhooker codex user_prompt_submit"
 ```
 
 虚拟环境部署时可以这样写：
 
 ```toml
-command = "/root/.venvs/openmia/bin/openmia-webhooker codex user_prompt_submit"
+command = "/home/you/.venvs/openmia/bin/openmia-webhooker codex user_prompt_submit"
+```
+
+Windows PowerShell 用户级安装时，hook command 可以使用 `openmia-webhooker.exe` 的完整路径，例如：
+
+```toml
+command = "C:\\Users\\you\\AppData\\Roaming\\Python\\Python313\\Scripts\\openmia-webhooker.exe codex user_prompt_submit"
+```
+
+Windows 虚拟环境部署时：
+
+```toml
+command = "C:\\Users\\you\\.venvs\\openmia\\Scripts\\openmia-webhooker.exe codex user_prompt_submit"
 ```
 
 ## 6. 本地 Dry-Run 验证
@@ -319,7 +413,39 @@ openmia-webhooker claude-code-watch --follow
 openmia-webhooker claude-code-watch --once --projects-dir /path/to/.claude/projects
 ```
 
-watcher 使用 `type=user` 开始新 round，后续 assistant/tool/result/error 事件归入当前 round，直到下一个 user 或 idle flush。已上传 round 会记录在 `~/.codex/openmia-custom-json/state`，重复 `--once` 不会重复上传。
+Windows PowerShell：
+
+```powershell
+openmia-webhooker claude-code-watch --once --projects-dir "$HOME\.claude\projects"
+```
+
+watcher 只在真实用户 prompt 行开始新 round。Claude Code JSONL 里有些 `type=user` 行是 tool result，SDK 会继续把这些事件归入当前 round。后续 assistant/tool/result/error 事件归入当前 round，直到下一个真实用户 prompt 或 idle flush。已上传 round 会记录在 `~/.codex/openmia-custom-json/state`，重复 `--once` 不会重复上传。
+
+如果 Claude Code 可执行文件不是 `claude`，可以使用：
+
+```bash
+openmia-webhooker claude-code-run --claude-command /path/to/claude -- -p "hello"
+```
+
+Windows PowerShell：
+
+```powershell
+openmia-webhooker claude-code-run --claude-command "C:\Path\To\claude.cmd" -- -p "hello"
+```
+
+也可以通过环境变量配置：
+
+```bash
+export OPENMIA_CLAUDE_COMMAND="/path/to/claude"
+export OPENMIA_CLAUDE_PROJECTS_DIR="$HOME/.claude/projects"
+```
+
+Windows PowerShell：
+
+```powershell
+$env:OPENMIA_CLAUDE_COMMAND = "C:\Path\To\claude.cmd"
+$env:OPENMIA_CLAUDE_PROJECTS_DIR = "$HOME\.claude\projects"
+```
 
 ## 9. 让 Codex 生效
 
@@ -335,6 +461,18 @@ watcher 使用 `type=user` 开始新 round，后续 assistant/tool/result/error 
 
 ## 10. 日志和排障
 
+先运行本地诊断。它不会上传、不写 state，也不会打印 ingest key：
+
+```bash
+openmia-webhooker doctor
+```
+
+机器可读输出：
+
+```bash
+openmia-webhooker doctor --json
+```
+
 查看最近日志：
 
 ```bash
@@ -345,6 +483,7 @@ tail -n 50 ~/.codex/openmia-custom-json/collector.log
 
 - `openmia-webhooker: command not found`: CLI 不在 `PATH`。改用绝对路径，或把 `~/.local/bin` 加入 `PATH`。
 - `OPENMIA_CUSTOM_JSON_INGEST_KEY missing`: `.env` 文件不存在、路径不对，或 key 没写。
+- Claude command 找不到: 使用 `openmia-webhooker doctor` 查看解析结果，再通过 `--claude-command` 或 `OPENMIA_CLAUDE_COMMAND` 指定。
 - `http_error`: endpoint 或 ingest key 不正确，或者 OpenMIA 拒绝了 payload。
 - `upload_failed`: 网络不可达、DNS 问题、TLS 问题，或 OpenMIA 服务暂时不可用。
 - `state_write_failed`: state 主目录和 fallback 目录都不可写。OpenMIA Webhooker 会先尝试 `~/.codex/openmia-custom-json/state`，主目录不可写时自动使用 `/tmp/openmia-custom-json/state`。
@@ -359,6 +498,8 @@ chmod 700 ~/.codex/openmia-custom-json
 chmod 700 ~/.codex/openmia-custom-json/state
 chmod 600 ~/.codex/openmia-custom-json.env
 ```
+
+Windows 权限通常不需要 `chmod`。如果遇到权限问题，确认当前用户能读写 `$HOME\.codex\openmia-custom-json`，或者用 `OPENMIA_HOME`、`OPENMIA_STATE_DIR`、`OPENMIA_LOG_PATH` 指向可写位置。
 
 ## 11. 隐私和安全
 
@@ -389,6 +530,7 @@ python3 -m pip install --upgrade openmia-webhooker
 
 ```bash
 openmia-webhooker --help
+openmia-webhooker doctor
 openmia-webhooker codex self_test --dry-run
 openmia-webhooker claude-code-watch --once --dry-run
 openmia-webhooker codex self_test
@@ -419,6 +561,7 @@ python3 -m pip install --user openmia-webhooker
 - `python3 -m pip --version` 正常。
 - `python3 -m pip show openmia-webhooker` 能看到 OpenMIA Webhooker。
 - `openmia-webhooker --help` 正常。
+- `openmia-webhooker doctor` 能显示 env/state/log 路径，且不会打印 ingest key。
 - `~/.codex/openmia-custom-json.env` 存在，权限为 `600`。
 - `~/.codex/config.toml` 已配置四个 hook。
 - `openmia-webhooker codex self_test --dry-run` 能输出 JSON。
