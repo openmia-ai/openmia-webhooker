@@ -113,10 +113,10 @@ class OpenMIAWebhookerTests(unittest.TestCase):
                 "post_tool_use",
             )
 
-            self.assertEqual(pre_trace["spans"][2]["status"], "running")
-            self.assertEqual(post_trace["spans"][2]["status"], "success")
-            self.assertEqual(post_trace["spans"][2]["metadata"]["tool_call_id"], "call-1")
-            self.assertTrue(post_trace["spans"][2]["output"]["tool"]["redacted"])
+            self.assertEqual(pre_trace["spans"][1]["status"], "running")
+            self.assertEqual(post_trace["spans"][1]["status"], "success")
+            self.assertEqual(post_trace["spans"][1]["metadata"]["tool_call_id"], "call-1")
+            self.assertTrue(post_trace["spans"][1]["output"]["tool"]["redacted"])
 
     def test_stop_trace_adds_reasoning_spans(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -158,11 +158,12 @@ class OpenMIAWebhookerTests(unittest.TestCase):
             self.assertEqual(trace["source"]["type"], "codex")
             self.assertEqual(trace["session"]["id"], "runtime-thread")
             self.assertEqual(trace["trace"]["id"], trace_id)
-            self.assertGreaterEqual(len(trace["spans"]), 2)
+            self.assertGreaterEqual(len(trace["spans"]), 1)
+            self.assertNotIn("workflow", {span["type"] for span in trace["spans"]})
             self.assertNotIn("round", {span["type"] for span in trace["spans"]})
-            self.assertEqual(trace["spans"][1]["type"], "chat")
-            self.assertIsNone(trace["spans"][1]["parentId"])
-            self.assertEqual(trace["spans"][1]["roundId"], trace["spans"][1]["metadata"]["turn_id"])
+            self.assertEqual(trace["spans"][0]["type"], "chat")
+            self.assertIsNone(trace["spans"][0]["parentId"])
+            self.assertEqual(trace["spans"][0]["roundId"], trace["spans"][0]["metadata"]["turn_id"])
 
     def test_same_codex_session_reuses_trace_and_increments_rounds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

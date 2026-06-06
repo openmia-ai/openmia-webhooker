@@ -145,7 +145,6 @@ def build_self_test_trace() -> dict[str, Any]:
         "output": {"completion": {"redacted": True, "length": 9, "sha256": sha256_text("completed")}},
         "metadata": {"source": "codex_hook_custom_json", "mode": "self_test"},
         "spans": [
-            make_root_span(trace_id, now, "success"),
             {
                 "span_id": f"{trace_id}_chat",
                 "parent_span_id": None,

@@ -78,7 +78,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertTrue(trace["input"]["prompt"]["redacted"])
         self.assertNotIn("text", trace["input"]["prompt"])
         self.assertTrue(trace["output"]["completion"]["redacted"])
-        self.assertGreaterEqual(len(trace["spans"]), 3)
+        self.assertGreaterEqual(len(trace["spans"]), 2)
 
     def test_same_session_uploads_increment_rounds_in_one_trace(self) -> None:
         collector, client = self.make_collector(capture_text=False)

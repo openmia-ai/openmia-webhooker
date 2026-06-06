@@ -21,7 +21,7 @@ from ..redaction import (
 )
 from ..runtime import to_runtime_payload
 from ..state import FileStateStore, newest_session_output_summary
-from ..traces import build_reasoning_spans, build_self_test_trace, make_chat_span, make_root_span
+from ..traces import build_reasoning_spans, build_self_test_trace, make_chat_span
 from ..utils import find_first_key, normalize_event_name, safe_id_part, stable_short, utc_now, sha256_text
 
 ID_KEYS = (
@@ -243,7 +243,6 @@ class CodexCollector:
                 "hook_payload": redacted_copy(payload),
             },
             "spans": [
-                make_root_span(trace_id, session_started_at),
                 {
                     **make_chat_span(
                         trace_id,
@@ -312,7 +311,6 @@ class CodexCollector:
                 "hook_payload": redacted_copy(payload),
             },
             "spans": [
-                make_root_span(trace_id, started_at, "success"),
                 make_chat_span(
                     trace_id,
                     chat_span_id,
@@ -462,7 +460,6 @@ class CodexCollector:
                 "tool_name": tool_name,
             },
             "spans": [
-                make_root_span(trace_id, started_at),
                 make_chat_span(trace_id, chat_span_id, turn_id, turn_index, chat_started_at),
                 {
                     "span_id": tool_span_id,

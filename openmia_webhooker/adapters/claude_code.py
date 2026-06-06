@@ -11,7 +11,6 @@ from ..config import OpenMIAConfig
 from ..redaction import redacted_copy, safe_summary, summarize_value
 from ..runtime import to_runtime_payload
 from ..state import FileStateStore
-from ..traces import make_root_span
 from ..utils import normalize_event_name, stable_short, utc_now
 
 
@@ -90,11 +89,7 @@ class ClaudeCodeCollector:
         round_id = round_id or f"round_{round_index}_{stable_short((prompt or result_text or session_id) + str(round_index), 10)}"
         chat_span_id = f"{trace_id}_chat_{round_id}"
 
-        root_span = make_root_span(trace_id, started_at, status)
-        root_span["name"] = "Claude Code session"
-        root_span["metadata"] = {"source": "claude_code_stream_json", "role": "root"}
-        spans = [root_span]
-        spans.append(
+        spans = [
             {
                 "span_id": chat_span_id,
                 "parent_span_id": None,
@@ -117,7 +112,7 @@ class ClaudeCodeCollector:
                     "permission_mode": init_event.get("permissionMode"),
                 },
             }
-        )
+        ]
         spans.extend(self._event_spans(trace_id, events, round_started_at, chat_span_id, round_id, round_index))
 
         return {
