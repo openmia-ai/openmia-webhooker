@@ -97,19 +97,15 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertEqual(first_trace["session"]["id"], "claude-multi-round")
         self.assertEqual(first_trace["trace"]["id"], second_trace["trace"]["id"])
 
-        first_round = next(span for span in first_trace["spans"] if span["type"] == "round")
-        second_round = next(span for span in second_trace["spans"] if span["type"] == "round")
         first_chat = next(span for span in first_trace["spans"] if span["type"] == "chat")
         second_chat = next(span for span in second_trace["spans"] if span["type"] == "chat")
 
-        self.assertTrue(first_round["roundId"].startswith("round_1_"))
-        self.assertTrue(second_round["roundId"].startswith("round_2_"))
-        self.assertIsNone(first_round["parentId"])
-        self.assertIsNone(second_round["parentId"])
-        self.assertEqual(first_chat["parentId"], first_round["id"])
-        self.assertEqual(second_chat["parentId"], second_round["id"])
-        self.assertEqual(first_chat["roundId"], first_round["roundId"])
-        self.assertEqual(second_chat["roundId"], second_round["roundId"])
+        self.assertNotIn("round", {span["type"] for span in first_trace["spans"]})
+        self.assertNotIn("round", {span["type"] for span in second_trace["spans"]})
+        self.assertTrue(first_chat["roundId"].startswith("round_1_"))
+        self.assertTrue(second_chat["roundId"].startswith("round_2_"))
+        self.assertIsNone(first_chat["parentId"])
+        self.assertIsNone(second_chat["parentId"])
         self.assertNotEqual(first_chat["id"], second_chat["id"])
 
     def test_build_error_trace_from_api_retries_without_result(self) -> None:

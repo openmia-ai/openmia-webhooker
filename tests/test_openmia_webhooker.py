@@ -113,10 +113,10 @@ class OpenMIAWebhookerTests(unittest.TestCase):
                 "post_tool_use",
             )
 
-            self.assertEqual(pre_trace["spans"][3]["status"], "running")
-            self.assertEqual(post_trace["spans"][3]["status"], "success")
-            self.assertEqual(post_trace["spans"][3]["metadata"]["tool_call_id"], "call-1")
-            self.assertTrue(post_trace["spans"][3]["output"]["tool"]["redacted"])
+            self.assertEqual(pre_trace["spans"][2]["status"], "running")
+            self.assertEqual(post_trace["spans"][2]["status"], "success")
+            self.assertEqual(post_trace["spans"][2]["metadata"]["tool_call_id"], "call-1")
+            self.assertTrue(post_trace["spans"][2]["output"]["tool"]["redacted"])
 
     def test_stop_trace_adds_reasoning_spans(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -159,11 +159,10 @@ class OpenMIAWebhookerTests(unittest.TestCase):
             self.assertEqual(trace["session"]["id"], "runtime-thread")
             self.assertEqual(trace["trace"]["id"], trace_id)
             self.assertGreaterEqual(len(trace["spans"]), 2)
-            self.assertEqual(trace["spans"][1]["type"], "round")
+            self.assertNotIn("round", {span["type"] for span in trace["spans"]})
+            self.assertEqual(trace["spans"][1]["type"], "chat")
             self.assertIsNone(trace["spans"][1]["parentId"])
-            self.assertEqual(trace["spans"][2]["type"], "chat")
-            self.assertEqual(trace["spans"][2]["parentId"], trace["spans"][1]["id"])
-            self.assertEqual(trace["spans"][2]["roundId"], trace["spans"][2]["metadata"]["turn_id"])
+            self.assertEqual(trace["spans"][1]["roundId"], trace["spans"][1]["metadata"]["turn_id"])
 
     def test_same_codex_session_reuses_trace_and_increments_rounds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -183,19 +182,15 @@ class OpenMIAWebhookerTests(unittest.TestCase):
             self.assertEqual(first_trace["trace"]["id"], second_trace["trace"]["id"])
             self.assertEqual(first_trace["session"]["id"], "codex-multi-round")
 
-            first_round = next(span for span in first_trace["spans"] if span["type"] == "round")
-            second_round = next(span for span in second_trace["spans"] if span["type"] == "round")
             first_chat = next(span for span in first_trace["spans"] if span["type"] == "chat")
             second_chat = next(span for span in second_trace["spans"] if span["type"] == "chat")
 
-            self.assertTrue(first_round["roundId"].startswith("turn_1_"))
-            self.assertTrue(second_round["roundId"].startswith("turn_2_"))
-            self.assertIsNone(first_round["parentId"])
-            self.assertIsNone(second_round["parentId"])
-            self.assertEqual(first_chat["parentId"], first_round["id"])
-            self.assertEqual(second_chat["parentId"], second_round["id"])
-            self.assertEqual(first_chat["roundId"], first_round["roundId"])
-            self.assertEqual(second_chat["roundId"], second_round["roundId"])
+            self.assertNotIn("round", {span["type"] for span in first_trace["spans"]})
+            self.assertNotIn("round", {span["type"] for span in second_trace["spans"]})
+            self.assertTrue(first_chat["roundId"].startswith("turn_1_"))
+            self.assertTrue(second_chat["roundId"].startswith("turn_2_"))
+            self.assertIsNone(first_chat["parentId"])
+            self.assertIsNone(second_chat["parentId"])
             self.assertNotEqual(first_chat["id"], second_chat["id"])
 
     def test_state_store_falls_back_when_primary_is_unwritable(self) -> None:
