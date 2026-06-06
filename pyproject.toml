@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openmia-webhooker"
+version = "0.1.0"
+description = "OpenMIA webhook-based observability collectors for local agent integrations."
+requires-python = ">=3.10"
+authors = [
+  { name = "OpenMIA" }
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.scripts]
+openmia-webhooker = "openmia_webhooker.cli:main"
+
+[tool.setuptools]
+packages = [
+  "openmia_webhooker",
+  "openmia_webhooker.adapters",
+]
