@@ -21,7 +21,7 @@ from ..redaction import (
 )
 from ..runtime import to_runtime_payload
 from ..state import FileStateStore, newest_session_output_summary
-from ..traces import build_reasoning_spans, build_self_test_trace, make_chat_span, make_root_span
+from ..traces import build_reasoning_spans, build_self_test_trace, make_chat_span, make_root_span, make_round_span
 from ..utils import find_first_key, normalize_event_name, safe_id_part, stable_short, utc_now, sha256_text
 
 ID_KEYS = (
@@ -202,6 +202,7 @@ class CodexCollector:
         except (TypeError, ValueError):
             turn_index = 1
         turn_id = f"turn_{turn_index}_{stable_short(event_id + (prompt or ''), 10)}"
+        round_span_id = f"{trace_id}_round_{turn_id}"
         chat_span_id = f"{trace_id}_chat_{turn_id}"
         cwd = find_first_key(payload, ("cwd", "current_working_directory", "workingDirectory")) or os.getcwd()
         state = {
@@ -210,6 +211,7 @@ class CodexCollector:
             "event_id": event_id,
             "turn_index": turn_index,
             "turn_id": turn_id,
+            "round_span_id": round_span_id,
             "chat_span_id": chat_span_id,
             "started_at": session_started_at,
             "last_prompt_at": now,
@@ -244,8 +246,17 @@ class CodexCollector:
             },
             "spans": [
                 make_root_span(trace_id, session_started_at),
+                make_round_span(trace_id, turn_id, turn_index, now),
                 {
-                    **make_chat_span(trace_id, chat_span_id, turn_id, turn_index, now, prompt_summary=prompt_summary),
+                    **make_chat_span(
+                        trace_id,
+                        chat_span_id,
+                        turn_id,
+                        turn_index,
+                        now,
+                        prompt_summary=prompt_summary,
+                        parent_span_id=round_span_id,
+                    ),
                     "metadata": {
                         "event": "UserPromptSubmit",
                         "turn_index": turn_index,
@@ -265,6 +276,7 @@ class CodexCollector:
         trace_id = str((state or {}).get("trace_id") or f"codex_custom_{stable_short(thread_id, 24)}")
         started_at = str((state or {}).get("started_at") or now)
         turn_id = str((state or {}).get("turn_id") or f"turn_unknown_{stable_short(raw_text or now, 10)}")
+        round_span_id = str((state or {}).get("round_span_id") or f"{trace_id}_round_{turn_id}")
         chat_span_id = str((state or {}).get("chat_span_id") or f"{trace_id}_chat_{turn_id}")
         stop_span_id = f"{trace_id}_stop_{turn_id}"
         turn_index = (state or {}).get("turn_index")
@@ -306,7 +318,17 @@ class CodexCollector:
             },
             "spans": [
                 make_root_span(trace_id, started_at, "success"),
-                make_chat_span(trace_id, chat_span_id, turn_id, turn_index, chat_started_at, "success", (state or {}).get("prompt")),
+                make_round_span(trace_id, turn_id, turn_index, chat_started_at, "success"),
+                make_chat_span(
+                    trace_id,
+                    chat_span_id,
+                    turn_id,
+                    turn_index,
+                    chat_started_at,
+                    "success",
+                    (state or {}).get("prompt"),
+                    parent_span_id=round_span_id,
+                ),
                 *thinking_spans,
                 {
                     "span_id": stop_span_id,
@@ -339,6 +361,7 @@ class CodexCollector:
         started_at = str((state or {}).get("started_at") or now)
         turn_index = (state or {}).get("turn_index")
         turn_id = str((state or {}).get("turn_id") or f"turn_unknown_{stable_short(thread_id, 10)}")
+        round_span_id = str((state or {}).get("round_span_id") or f"{trace_id}_round_{turn_id}")
         chat_span_id = str((state or {}).get("chat_span_id") or f"{trace_id}_chat_{turn_id}")
         chat_started_at = str((state or {}).get("last_prompt_at") or started_at)
 
@@ -391,6 +414,7 @@ class CodexCollector:
                 "started_at": started_at,
                 "turn_index": turn_index,
                 "turn_id": turn_id,
+                "round_span_id": round_span_id,
                 "chat_span_id": chat_span_id,
                 "first_tool_at": updated_state.get("first_tool_at") or tool_started_at,
                 "last_tool_at": now,
@@ -448,7 +472,8 @@ class CodexCollector:
             },
             "spans": [
                 make_root_span(trace_id, started_at),
-                make_chat_span(trace_id, chat_span_id, turn_id, turn_index, chat_started_at),
+                make_round_span(trace_id, turn_id, turn_index, chat_started_at),
+                make_chat_span(trace_id, chat_span_id, turn_id, turn_index, chat_started_at, parent_span_id=round_span_id),
                 {
                     "span_id": tool_span_id,
                     "parent_span_id": chat_span_id,

@@ -30,12 +30,12 @@ OpenMIA Webhooker 负责：
 
 - 读取 Codex hook stdin payload。
 - 识别 `UserPromptSubmit`、`Stop`、`PreToolUse`、`PostToolUse` 事件。
-- 构造 Runtime JSON v1：session、trace、chat turn、tool span、reasoning placeholder span。
+- 构造 Runtime JSON v1：session、trace、round span、chat span、tool span、reasoning placeholder span。
 - 根据配置决定上传明文或 hash 摘要。
-- 维护本地 state，把同一轮 prompt、工具调用和 stop 事件关联起来。
-- 上传到 OpenMIA custom_json ingestion endpoint；服务端只负责 raw-first 存储、权限隔离和标准化写入。
+- 维护本地 state，把同一个本地 session 稳定映射到一个 trace，并把多轮对话追加为新的 round/chat spans。
+- 上传到现有 OpenMIA custom_json ingestion endpoint；服务端只负责 raw-first 存储、权限隔离和标准化写入。
 
-Runtime JSON v1 使用 `schemaVersion = "openmia.runtime.v1"`。SDK/webhooker 侧负责理解 Codex hook 语义；OpenMIA app 服务端不再为每个本地工具复制一套来源专属语义 adapter。
+Runtime JSON v1 使用 `schemaVersion = "openmia.runtime.v1"`。SDK/webhooker 侧负责理解 Codex hook 和 Claude Code stream-json 语义；OpenMIA app 服务端不再为每个本地工具复制一套来源专属语义 adapter。custom_json endpoint 保持不变，只是 payload schema 升级。
 
 本地仍需要维护这些文件：
 

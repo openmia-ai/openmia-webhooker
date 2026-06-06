@@ -10,7 +10,8 @@ from ..client import OpenMIAClient
 from ..config import OpenMIAConfig
 from ..redaction import redacted_copy, safe_summary, summarize_value
 from ..runtime import to_runtime_payload
-from ..traces import make_root_span
+from ..state import FileStateStore
+from ..traces import make_root_span, make_round_span
 from ..utils import normalize_event_name, stable_short, utc_now
 
 
@@ -41,9 +42,15 @@ def parse_jsonl(lines: Iterable[str]) -> list[dict[str, Any]]:
 class ClaudeCodeCollector:
     """Adapter for Claude Code stream-json output."""
 
-    def __init__(self, config: OpenMIAConfig, client: OpenMIAClient | None = None) -> None:
+    def __init__(
+        self,
+        config: OpenMIAConfig,
+        client: OpenMIAClient | None = None,
+        state_store: FileStateStore | None = None,
+    ) -> None:
         self.config = config
         self.client = client or OpenMIAClient.from_config(config)
+        self.state_store = state_store or FileStateStore(config.state_dir)
 
     @classmethod
     def from_env(cls) -> "ClaudeCodeCollector":
@@ -62,37 +69,59 @@ class ClaudeCodeCollector:
         events: list[dict[str, Any]],
         name: str = "Claude Code session",
         prompt: str | None = None,
+        session_id: str | None = None,
+        round_index: int | None = None,
+        round_id: str | None = None,
+        session_started_at: str | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         init_event = next((event for event in events if event.get("type") == "system" and event.get("subtype") == "init"), {})
         result_event = next((event for event in reversed(events) if event.get("type") == "result"), {})
-        session_id = str(init_event.get("session_id") or result_event.get("session_id") or f"claude_code_{stable_short(now, 16)}")
+        session_id = str(session_id or init_event.get("session_id") or result_event.get("session_id") or f"claude_code_{stable_short(now, 16)}")
         trace_id = f"claude_code_{stable_short(session_id, 24)}"
         status = self._trace_status(events, result_event)
-        started_at = str(init_event.get("timestamp") or now)
+        started_at = str(session_started_at or init_event.get("timestamp") or now)
+        round_started_at = str(init_event.get("timestamp") or now)
         ended_at = now if result_event or status in {"error", "timeout"} else None
         prompt_summary = safe_summary(prompt, self.config.capture_text)
         result_text = self._result_text(events, result_event)
         output_summary = safe_summary(result_text, self.config.capture_text)
+        round_index = round_index or 1
+        round_id = round_id or f"round_{round_index}_{stable_short((prompt or result_text or session_id) + str(round_index), 10)}"
+        round_span_id = f"{trace_id}_round_{round_id}"
+        chat_span_id = f"{trace_id}_chat_{round_id}"
 
         root_span = make_root_span(trace_id, started_at, status)
         root_span["name"] = "Claude Code session"
         root_span["metadata"] = {"source": "claude_code_stream_json", "role": "root"}
         spans = [root_span]
+        round_span = make_round_span(trace_id, round_id, round_index, round_started_at, status)
+        round_span["name"] = f"Claude Code round {round_index}"
+        round_span["metadata"] = {
+            "source": "claude_code_stream_json",
+            "event": "Round",
+            "round_index": round_index,
+            "round_id": round_id,
+            "session_id": session_id,
+        }
+        spans.append(round_span)
         spans.append(
             {
-                "span_id": f"{trace_id}_chat",
-                "parent_span_id": f"{trace_id}_root",
-                "name": "Claude Code run",
+                "span_id": chat_span_id,
+                "parent_span_id": round_span_id,
+                "round_id": round_id,
+                "name": f"Claude Code round {round_index} chat",
                 "type": "chat",
                 "status": status,
-                "start_time": started_at,
+                "start_time": round_started_at,
                 "end_time": ended_at,
                 "input": {"prompt": prompt_summary} if prompt_summary else None,
                 "output": {"completion": output_summary} if output_summary else None,
                 "metadata": {
                     "source": "claude_code_stream_json",
                     "session_id": session_id,
+                    "round_index": round_index,
+                    "round_id": round_id,
                     "model": init_event.get("model"),
                     "claude_code_version": init_event.get("claude_code_version"),
                     "cwd": init_event.get("cwd"),
@@ -100,7 +129,7 @@ class ClaudeCodeCollector:
                 },
             }
         )
-        spans.extend(self._event_spans(trace_id, events, started_at))
+        spans.extend(self._event_spans(trace_id, events, round_started_at, chat_span_id, round_id, round_index))
 
         return {
             "trace_id": trace_id,
@@ -115,6 +144,8 @@ class ClaudeCodeCollector:
                 "source": "claude_code_stream_json",
                 "mode": "stream_json",
                 "event_count": len(events),
+                "round_index": round_index,
+                "round_id": round_id,
                 "model": init_event.get("model"),
                 "claude_code_version": init_event.get("claude_code_version"),
                 "cwd": init_event.get("cwd"),
@@ -135,7 +166,17 @@ class ClaudeCodeCollector:
         stdout: TextIO | None = None,
     ) -> int:
         out = stdout if stdout is not None else sys.stdout
-        legacy_trace = self.build_trace(events, name=name, prompt=prompt)
+        session_id = self._session_id(events)
+        round_index, round_id, session_started_at = self._next_round(session_id, events, prompt, persist=not dry_run)
+        legacy_trace = self.build_trace(
+            events,
+            name=name,
+            prompt=prompt,
+            session_id=session_id,
+            round_index=round_index,
+            round_id=round_id,
+            session_started_at=session_started_at,
+        )
         trace_id = str(legacy_trace["trace_id"])
         trace = to_runtime_payload(
             legacy_trace,
@@ -171,6 +212,43 @@ class ClaudeCodeCollector:
             self.log_event({"level": "error", "message": "upload_failed", "trace_id": trace_id, "error": repr(exc)})
         return 0
 
+    def _session_id(self, events: list[dict[str, Any]]) -> str:
+        init_event = next((event for event in events if event.get("type") == "system" and event.get("subtype") == "init"), {})
+        result_event = next((event for event in reversed(events) if event.get("type") == "result"), {})
+        return str(init_event.get("session_id") or result_event.get("session_id") or f"claude_code_{stable_short(utc_now(), 16)}")
+
+    def _state_key(self, session_id: str) -> str:
+        return f"claude_code:{session_id}"
+
+    def _next_round(self, session_id: str, events: list[dict[str, Any]], prompt: str | None, persist: bool) -> tuple[int, str, str]:
+        now = utc_now()
+        state_key = self._state_key(session_id)
+        state = self.state_store.load(state_key) or {}
+        try:
+            round_index = int(state.get("round_index") or 0) + 1
+        except (TypeError, ValueError):
+            round_index = 1
+        session_started_at = str(state.get("started_at") or now)
+        round_id = f"round_{round_index}_{stable_short((prompt or json.dumps(events, sort_keys=True, default=str)) + str(round_index), 10)}"
+        if persist:
+            try:
+                self.state_store.save(
+                    state_key,
+                    {
+                        "thread_id": state_key,
+                        "source": "claude_code_stream_json",
+                        "session_id": session_id,
+                        "trace_id": f"claude_code_{stable_short(session_id, 24)}",
+                        "started_at": session_started_at,
+                        "round_index": round_index,
+                        "round_id": round_id,
+                        "updated_at": now,
+                    },
+                )
+            except OSError as exc:
+                self.log_event({"level": "error", "message": "state_write_failed", "thread_id": state_key, "error": repr(exc)})
+        return round_index, round_id, session_started_at
+
     def _trace_status(self, events: list[dict[str, Any]], result_event: dict[str, Any]) -> str:
         if result_event:
             return "error" if result_event.get("is_error") else "success"
@@ -191,7 +269,15 @@ class ClaudeCodeCollector:
                     texts.append(text)
         return "\n".join(texts) if texts else None
 
-    def _event_spans(self, trace_id: str, events: list[dict[str, Any]], fallback_time: str) -> list[dict[str, Any]]:
+    def _event_spans(
+        self,
+        trace_id: str,
+        events: list[dict[str, Any]],
+        fallback_time: str,
+        chat_span_id: str,
+        round_id: str,
+        round_index: int,
+    ) -> list[dict[str, Any]]:
         spans: list[dict[str, Any]] = []
         for index, event in enumerate(events[:200], start=1):
             event_type = str(event.get("type") or "event")
@@ -208,7 +294,8 @@ class ClaudeCodeCollector:
             spans.append(
                 {
                     "span_id": span_id,
-                    "parent_span_id": f"{trace_id}_chat",
+                    "parent_span_id": chat_span_id,
+                    "round_id": round_id,
                     "name": self._event_name(event_type, subtype, index),
                     "type": span_type,
                     "status": span_status,
@@ -220,6 +307,8 @@ class ClaudeCodeCollector:
                         "source": "claude_code_stream_json",
                         "event_type": event_type,
                         "event_subtype": subtype or None,
+                        "round_index": round_index,
+                        "round_id": round_id,
                         "uuid": event.get("uuid"),
                         "raw_event": redacted_copy(event),
                     },

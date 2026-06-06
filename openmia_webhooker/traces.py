@@ -17,6 +17,26 @@ def make_root_span(trace_id: str, started_at: str, status: str = "unknown") -> d
     }
 
 
+def make_round_span(
+    trace_id: str,
+    round_id: str,
+    round_index: Any,
+    started_at: str,
+    status: str = "unknown",
+    parent_span_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "span_id": f"{trace_id}_round_{round_id}",
+        "parent_span_id": parent_span_id or f"{trace_id}_root",
+        "round_id": round_id,
+        "name": f"Round {round_index}" if round_index else "Round unknown",
+        "type": "round",
+        "status": status,
+        "start_time": started_at,
+        "metadata": {"event": "Round", "turn_index": round_index, "turn_id": round_id},
+    }
+
+
 def make_chat_span(
     trace_id: str,
     chat_span_id: str,
@@ -25,10 +45,12 @@ def make_chat_span(
     started_at: str,
     status: str = "unknown",
     prompt_summary: dict[str, Any] | None = None,
+    parent_span_id: str | None = None,
 ) -> dict[str, Any]:
     return {
         "span_id": chat_span_id,
-        "parent_span_id": f"{trace_id}_root",
+        "parent_span_id": parent_span_id or f"{trace_id}_root",
+        "round_id": turn_id,
         "name": f"Chat turn {turn_index}" if turn_index else "Chat turn unknown",
         "type": "chat",
         "status": status,
@@ -144,9 +166,11 @@ def build_self_test_trace() -> dict[str, Any]:
         "metadata": {"source": "codex_hook_custom_json", "mode": "self_test"},
         "spans": [
             make_root_span(trace_id, now, "success"),
+            make_round_span(trace_id, "self_test_round_1", 1, now, "success"),
             {
                 "span_id": f"{trace_id}_chat",
-                "parent_span_id": f"{trace_id}_root",
+                "parent_span_id": f"{trace_id}_round_self_test_round_1",
+                "round_id": "self_test_round_1",
                 "name": "Self-test chat",
                 "type": "chat",
                 "status": "success",

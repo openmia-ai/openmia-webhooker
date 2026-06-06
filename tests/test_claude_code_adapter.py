@@ -80,6 +80,36 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertTrue(trace["output"]["completion"]["redacted"])
         self.assertGreaterEqual(len(trace["spans"]), 3)
 
+    def test_same_session_uploads_increment_rounds_in_one_trace(self) -> None:
+        collector, client = self.make_collector(capture_text=False)
+        events = [
+            {"type": "system", "subtype": "init", "session_id": "claude-multi-round"},
+            {"type": "result", "is_error": False, "result": "ok", "session_id": "claude-multi-round"},
+        ]
+
+        self.assertEqual(collector.handle(events, prompt="first", dry_run=False), 0)
+        self.assertEqual(collector.handle(events, prompt="second", dry_run=False), 0)
+
+        self.assertEqual(len(client.traces), 2)
+        first_trace, second_trace = client.traces
+        self.assertEqual(first_trace["schemaVersion"], "openmia.runtime.v1")
+        self.assertEqual(second_trace["schemaVersion"], "openmia.runtime.v1")
+        self.assertEqual(first_trace["session"]["id"], "claude-multi-round")
+        self.assertEqual(first_trace["trace"]["id"], second_trace["trace"]["id"])
+
+        first_round = next(span for span in first_trace["spans"] if span["type"] == "round")
+        second_round = next(span for span in second_trace["spans"] if span["type"] == "round")
+        first_chat = next(span for span in first_trace["spans"] if span["type"] == "chat")
+        second_chat = next(span for span in second_trace["spans"] if span["type"] == "chat")
+
+        self.assertTrue(first_round["roundId"].startswith("round_1_"))
+        self.assertTrue(second_round["roundId"].startswith("round_2_"))
+        self.assertEqual(first_chat["parentId"], first_round["id"])
+        self.assertEqual(second_chat["parentId"], second_round["id"])
+        self.assertEqual(first_chat["roundId"], first_round["roundId"])
+        self.assertEqual(second_chat["roundId"], second_round["roundId"])
+        self.assertNotEqual(first_chat["id"], second_chat["id"])
+
     def test_build_error_trace_from_api_retries_without_result(self) -> None:
         collector, _ = self.make_collector(capture_text=False)
         events = [
